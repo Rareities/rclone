@@ -9,6 +9,7 @@ import (
 	"path"
 	"regexp"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/coreos/go-semver/semver"
@@ -54,10 +55,6 @@ var (
 	errCanNotUploadFileWithUnknownSize = errors.New("proton Drive can't upload files with unknown size")
 	errCanNotPurgeRootDirectory        = errors.New("can't purge root directory")
 	protonDriveInvalidVersionChars     = regexp.MustCompile(`[^0-9A-Za-z.+-]+`)
-
-	// for the auth/deauth handler
-	_mapper        configmap.Mapper
-	_saltedKeyPass string
 )
 
 // Register with Fs
@@ -330,7 +327,6 @@ func getConfigMap(m configmap.Mapper) (uid, accessToken, refreshToken, saltedKey
 	if saltedKeyPass, ok = m.Get(clientSaltedKeyPassKey); !ok {
 		return
 	}
-	_saltedKeyPass = saltedKeyPass
 
 	// empty strings are considered "ok" by m.Get, which is not true business-wise
 	ok = accessToken != "" && uid != "" && refreshToken != "" && saltedKeyPass != ""
@@ -343,22 +339,44 @@ func setConfigMap(m configmap.Mapper, uid, accessToken, refreshToken, saltedKeyP
 	m.Set(clientAccessTokenKey, accessToken)
 	m.Set(clientRefreshTokenKey, refreshToken)
 	m.Set(clientSaltedKeyPassKey, saltedKeyPass)
-	_saltedKeyPass = saltedKeyPass
 }
 
 func clearConfigMap(m configmap.Mapper) {
 	setConfigMap(m, "", "", "", "")
-	_saltedKeyPass = ""
 }
 
-func authHandler(auth proton.Auth) {
-	// fs.Debugf("authHandler called")
-	setConfigMap(_mapper, auth.UID, auth.AccessToken, auth.RefreshToken, _saltedKeyPass)
+// protonAuthState binds credential callbacks to the configuration for one Fs.
+type protonAuthState struct {
+	mu            sync.Mutex
+	mapper        configmap.Mapper
+	saltedKeyPass string
 }
 
-func deAuthHandler() {
-	// fs.Debugf("deAuthHandler called")
-	clearConfigMap(_mapper)
+func (s *protonAuthState) authHandler(auth proton.Auth) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	setConfigMap(s.mapper, auth.UID, auth.AccessToken, auth.RefreshToken, s.saltedKeyPass)
+}
+
+func (s *protonAuthState) deAuthHandler() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	clearConfigMap(s.mapper)
+	s.saltedKeyPass = ""
+}
+
+func (s *protonAuthState) set(uid, accessToken, refreshToken, saltedKeyPass string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	setConfigMap(s.mapper, uid, accessToken, refreshToken, saltedKeyPass)
+	s.saltedKeyPass = saltedKeyPass
+}
+
+func (s *protonAuthState) clear() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	clearConfigMap(s.mapper)
+	s.saltedKeyPass = ""
 }
 
 func protonDriveAppVersionFromRcloneVersion(version string) string {
@@ -481,7 +499,7 @@ func newProtonDrive(ctx context.Context, f *Fs, opt *Options, m configmap.Mapper
 
 	// let's see if we have the cached access credential
 	uid, accessToken, refreshToken, saltedKeyPass, hasUseReusableLoginCredentials := getConfigMap(m)
-	_saltedKeyPass = saltedKeyPass
+	authState := &protonAuthState{mapper: m, saltedKeyPass: saltedKeyPass}
 
 	if hasUseReusableLoginCredentials {
 		fs.Debugf(f, "Has cached credentials")
@@ -492,11 +510,11 @@ func newProtonDrive(ctx context.Context, f *Fs, opt *Options, m configmap.Mapper
 		config.ReusableCredential.RefreshToken = refreshToken
 		config.ReusableCredential.SaltedKeyPass = saltedKeyPass
 
-		protonDrive /* credential will be nil since access credentials are passed in */, _, err := protonDriveAPI.NewProtonDrive(ctx, config, authHandler, deAuthHandler)
+		protonDrive /* credential will be nil since access credentials are passed in */, _, err := protonDriveAPI.NewProtonDrive(ctx, config, authState.authHandler, authState.deAuthHandler)
 		if err != nil {
 			fs.Debugf(f, "Cached credential doesn't work, clearing and using the fallback login method")
 			// clear the access token on failure
-			clearConfigMap(m)
+			authState.clear()
 
 			fs.Debugf(f, "couldn't initialize a new proton drive instance using cached credentials: %v", err)
 			// we fallback to username+password login -> don't throw an error here
@@ -522,13 +540,13 @@ func newProtonDrive(ctx context.Context, f *Fs, opt *Options, m configmap.Mapper
 		}
 		config.FirstLoginCredential.TwoFA = code
 	}
-	protonDrive, auth, err := protonDriveAPI.NewProtonDrive(ctx, config, authHandler, deAuthHandler)
+	protonDrive, auth, err := protonDriveAPI.NewProtonDrive(ctx, config, authState.authHandler, authState.deAuthHandler)
 	if err != nil {
 		return nil, fmt.Errorf("couldn't initialize a new proton drive instance: %w", err)
 	}
 
 	fs.Debugf(f, "Used username and password to initialize the ProtonDrive API")
-	setConfigMap(m, auth.UID, auth.AccessToken, auth.RefreshToken, auth.SaltedKeyPass)
+	authState.set(auth.UID, auth.AccessToken, auth.RefreshToken, auth.SaltedKeyPass)
 
 	return protonDrive, nil
 }
@@ -536,7 +554,6 @@ func newProtonDrive(ctx context.Context, f *Fs, opt *Options, m configmap.Mapper
 // NewFs constructs an Fs from the path, container:path
 func NewFs(ctx context.Context, name, root string, m configmap.Mapper) (fs.Fs, error) {
 	// pacer is not used in NewFs()
-	_mapper = m
 
 	// Parse config into Options struct
 	opt := new(Options)
