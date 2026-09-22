@@ -6,7 +6,7 @@ provenance from the old Round Sync handoff or from closed pull requests.
 
 | Purpose | Upstream issue/PR | Rareities commit | Upstream equivalent | Removal condition | Tests |
 |---|---|---|---|---|---|
-| WP01 bounded no-change decision | N/A: no reproducible defect requiring a targeted patch | N/A: local `19d72e8` is documentation only; source baseline is `b9ba7bb` | None selected; Rareities head `1583cce…` is the exact merge base of upstream candidate `1e925200…` | Replace only after review of an exact immutable candidate and successful standalone/native compatibility gates | `go build -buildvcs=false -mod=readonly ./...`; focused sync/operations and Proton/Internxt tests — PASS |
+| WP01 bounded no-change decision | N/A: no reproducible defect requiring a targeted patch | N/A: `7c16245` is documentation only; engine baseline is Rareities `1583cce…` | None selected; Rareities head `1583cce…` is the exact merge base of upstream candidate `1e925200…` | Replace only after review of an exact immutable candidate and successful standalone/native compatibility gates | `go build -buildvcs=false -mod=readonly ./...`; focused sync/operations and Proton/Internxt tests — PASS |
 
 The current Rareities/rclone master identity is `1583cce1e28340e5d064ed955179f5f2b31e7757`.
 Before adding a patch, record the root cause, owning layer, exact local commit, dependency
@@ -31,3 +31,14 @@ defect or fork-only patch was identified, WP01 records a bounded no-change decis
 current engine remains independently useful and validated; the upstream candidate is deferred
 until its exact changes can be reviewed and tested. CloudBridge's existing app pin was not
 changed in this package.
+
+## History-preserving workspace branch
+
+The WP01 documentation commits were replayed onto `codex/luna-engine`, descended directly
+from Rareities/rclone `1583cce1e28340e5d064ed955179f5f2b31e7757`. The archive-derived
+checkout remains rollback evidence; do not push its unrelated root. No Go source change, push
+or PR was made by this replay. The CloudBridge pin still names the immutable Rareities head.
+On this history-preserving branch, `go test ./fs/sync ./fs/operations
+./backend/protondrive ./backend/internxt` passed and
+`go build -buildvcs=false -mod=readonly ./...` passed with the workspace Go 1.26.8 toolchain.
+These are independent engine checks, not Android-native or live Proton acceptance.
