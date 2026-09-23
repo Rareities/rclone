@@ -5,8 +5,10 @@ import (
 	"compress/gzip"
 	"context"
 	"crypto/md5"
+	"encoding/base64"
 	"errors"
 	"fmt"
+	"io"
 	"path"
 	"strings"
 	"testing"
@@ -22,6 +24,7 @@ import (
 	"github.com/rclone/rclone/fstest"
 	"github.com/rclone/rclone/fstest/fstests"
 	"github.com/rclone/rclone/lib/bucket"
+	"github.com/rclone/rclone/lib/pool"
 	"github.com/rclone/rclone/lib/random"
 	"github.com/rclone/rclone/lib/version"
 	"github.com/stretchr/testify/assert"
@@ -302,9 +305,31 @@ func TestMergeDeleteMarkers(t *testing.T) {
 			},
 		},
 	} {
-		got := mergeDeleteMarkers(test.versions, test.markers)
+		got := mergeDeleteMarkers(test.versions, test.markers, false)
 		assert.Equal(t, test.want, got, fmt.Sprintf("%d: %+v", n, test))
 	}
+}
+
+func TestMergeDeleteMarkersWithURLEncodedKeys(t *testing.T) {
+	plainKey := "images/reservations/photo.png"
+	encodedKey := "images/%D0%9F%D1%80%D0%B8%D0%B2%D0%B5%D1%82-01.jpg"
+	t1 := fstest.Time("2022-01-21T12:00:00+01:00")
+	t2 := fstest.Time("2022-01-21T12:00:01+01:00")
+	versions := []types.ObjectVersion{
+		{Key: &plainKey, LastModified: &t2},
+		{Key: &encodedKey, LastModified: &t1},
+	}
+	markers := []types.DeleteMarkerEntry{
+		{Key: &encodedKey, LastModified: &t2},
+	}
+
+	got := mergeDeleteMarkers(versions, markers, true)
+	want := []types.ObjectVersion{
+		{Key: &plainKey, LastModified: &t2},
+		{Key: &encodedKey, LastModified: &t2, Size: isDeleteMarker},
+		{Key: &encodedKey, LastModified: &t1},
+	}
+	assert.Equal(t, want, got)
 }
 
 func TestRemoveAWSChunked(t *testing.T) {
@@ -843,3 +868,48 @@ func (f *Fs) InternalTest(t *testing.T) {
 }
 
 var _ fstests.InternalTester = (*Fs)(nil)
+
+func TestBufferForObjectLockMD5(t *testing.T) {
+	content := []byte("object lock body")
+	md5sum := md5.Sum(content)
+	wantMD5 := base64.StdEncoding.EncodeToString(md5sum[:])
+
+	t.Run("NoObjectLock", func(t *testing.T) {
+		req := &s3.PutObjectInput{}
+		in := bytes.NewReader(content)
+		body, cleanup, err := bufferForObjectLockMD5(req, in)
+		defer cleanup()
+		require.NoError(t, err)
+		assert.Equal(t, io.Reader(in), body, "body should be passed through untouched")
+		assert.Nil(t, req.ContentMD5)
+	})
+
+	t.Run("SourceMD5", func(t *testing.T) {
+		req := &s3.PutObjectInput{
+			ObjectLockMode: types.ObjectLockModeCompliance,
+			ContentMD5:     aws.String(wantMD5),
+		}
+		in := bytes.NewReader(content)
+		body, cleanup, err := bufferForObjectLockMD5(req, in)
+		defer cleanup()
+		require.NoError(t, err)
+		assert.Equal(t, io.Reader(in), body, "body should not be buffered when the MD5 is known")
+		assert.Equal(t, wantMD5, *req.ContentMD5)
+	})
+
+	t.Run("Buffered", func(t *testing.T) {
+		inUse := pool.Global().InUse()
+		req := &s3.PutObjectInput{
+			ObjectLockLegalHoldStatus: types.ObjectLockLegalHoldStatusOn,
+		}
+		body, cleanup, err := bufferForObjectLockMD5(req, bytes.NewReader(content))
+		require.NoError(t, err)
+		require.NotNil(t, req.ContentMD5)
+		assert.Equal(t, wantMD5, *req.ContentMD5)
+		got, err := io.ReadAll(body)
+		require.NoError(t, err)
+		assert.Equal(t, content, got)
+		cleanup()
+		assert.Equal(t, inUse, pool.Global().InUse(), "pool buffers leaked")
+	})
+}

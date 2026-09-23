@@ -37,9 +37,9 @@ import (
 	"github.com/rclone/rclone/lib/atexit"
 	"github.com/rclone/rclone/lib/dircache"
 	"github.com/rclone/rclone/lib/encoder"
+	"github.com/rclone/rclone/lib/multipart"
 	"github.com/rclone/rclone/lib/oauthutil"
 	"github.com/rclone/rclone/lib/pacer"
-	"github.com/rclone/rclone/lib/readers"
 	"github.com/rclone/rclone/lib/rest"
 )
 
@@ -56,7 +56,16 @@ const (
 	driveTypeSharepoint         = "documentLibrary"
 	defaultChunkSize            = 10 * fs.Mebi
 	chunkSizeMultiple           = 320 * fs.Kibi
-	maxSinglePartSize           = 4 * fs.Mebi
+	defaultTenantAPIVersion     = "v2.0"
+	// maxSinglePartSize is the size at which Graph stops accepting an upload in a
+	// single request (PUT /items/{id}/content). Microsoft documents this as
+	// "250 MB", see
+	// https://learn.microsoft.com/en-us/graph/api/driveitem-put-content
+	// Measured against SharePoint Online the figure is binary and exclusive: a
+	// body of 262143999 bytes is accepted, one of 262144000 is not. That matches
+	// upload_cutoff being an exclusive threshold in Update below, so a cutoff of
+	// exactly 250Mi sends everything the server would refuse to multipart.
+	maxSinglePartSize = 250 * fs.Mebi
 
 	regionGlobal = "global"
 	regionUS     = "us"
@@ -158,7 +167,7 @@ See: https://github.com/rclone/rclone/issues/1716
 			Name: "tenant_url",
 			Help: `The tenant URL for non-admin OneDrive access.
 
-Set this to your SharePoint tenant URL to use the SharePoint v2.0 API
+Set this to your SharePoint tenant URL to use the SharePoint API
 endpoint instead of the standard Microsoft Graph API. This allows
 accessing business OneDrive without admin consent.
 
@@ -168,6 +177,16 @@ for "driveAccessToken" in the network requests. Look for the
 
 Example: https://your-tenant.sharepoint.com/_api`,
 			Default:  "",
+			Advanced: true,
+		}, {
+			Name: "tenant_api_version",
+			Help: `The SharePoint API version to use with tenant_url.
+
+Set this to the SharePoint API version matching the browser-extracted
+access token. For example, use v2.1 with a driveAccessTokenV21 token.
+
+This only applies when tenant_url is set.`,
+			Default:  defaultTenantAPIVersion,
 			Advanced: true,
 		}, {
 			Name: "chunk_size",
@@ -275,16 +294,13 @@ cases, rclone will fall back to normal copy (which will be slightly slower).`,
 			Default: false,
 			Help: `Remove all versions on modifying operations.
 
-Onedrive for business creates versions when rclone uploads new files
+Onedrive creates versions when rclone uploads new files
 overwriting an existing one and when it sets the modification time.
 
 These versions take up space out of the quota.
 
 This flag checks for versions after file upload and setting
 modification time and removes all but the last version.
-
-**NB** Onedrive personal can't currently delete versions so don't use
-this flag there.
 `,
 			Advanced: true,
 		}, {
@@ -294,8 +310,7 @@ this flag there.
 Normally files will get sent to the recycle bin on deletion. Setting
 this flag causes them to be permanently deleted. Use with care.
 
-OneDrive personal accounts do not support the permanentDelete API,
-it only applies to OneDrive for Business and SharePoint document libraries.
+This works with OneDrive for Business, SharePoint document libraries, and OneDrive personal accounts, including free accounts.
 `,
 			Advanced: true,
 			Default:  false,
@@ -324,14 +339,18 @@ it only applies to OneDrive for Business and SharePoint document libraries.
 				Help:  "Creates a read-write link to the item.",
 			}, {
 				Value: "embed",
-				Help:  "Creates an embeddable link to the item.",
+				Help:  "Creates an embeddable link to the item.\nOnly available in OneDrive personal.",
 			}},
 		}, {
 			Name:    "link_password",
 			Default: "",
 			Help: `Set the password for links created by the link command.
 
-At the time of writing this only works with OneDrive personal paid accounts.
+At the time of writing this works with OneDrive for Business and
+OneDrive personal paid accounts.
+
+OneDrive personal free accounts can't set a password or an expiry time
+(with --expire) on links.
 `,
 			Advanced:  true,
 			Sensitive: true,
@@ -502,10 +521,18 @@ func getRegionURL(m configmap.Mapper) (region, graphURL string) {
 	// Check if tenant_url is provided for non-admin mode
 	tenantURL, _ := m.Get("tenant_url")
 	if tenantURL != "" {
-		graphURL = tenantURL + "/v2.0"
+		tenantAPIVersion, _ := m.Get("tenant_api_version")
+		graphURL = tenantAPIEndpoint(tenantURL, tenantAPIVersion)
 	}
 
 	return region, graphURL
+}
+
+func tenantAPIEndpoint(tenantURL, tenantAPIVersion string) string {
+	if tenantAPIVersion == "" {
+		tenantAPIVersion = defaultTenantAPIVersion
+	}
+	return strings.TrimRight(tenantURL, "/") + "/" + strings.TrimLeft(tenantAPIVersion, "/")
 }
 
 // Config for chooseDrive
@@ -573,7 +600,7 @@ func chooseDrive(ctx context.Context, name string, m configmap.Mapper, srv *rest
 					drives.Drives = append(drives.Drives, meDrive)
 				}
 			} else if drivesErr != nil {
-				return fs.ConfigError("choose_type", fmt.Sprintf("Failed to query available drives: /me/drives: %v; /me/drive: %v", drivesErr, meDriveErr))
+				return fs.ConfigError("driveid", fmt.Sprintf("Failed to query available drives: /me/drives: %v; /me/drive: %v\nEnter the drive ID manually instead", drivesErr, meDriveErr))
 			}
 		} else if drivesErr != nil {
 			return fs.ConfigError("choose_type", fmt.Sprintf("Failed to query available drives: %v", drivesErr))
@@ -801,6 +828,7 @@ type Options struct {
 	UploadCutoff            fs.SizeSuffix        `config:"upload_cutoff"`
 	ChunkSize               fs.SizeSuffix        `config:"chunk_size"`
 	TenantURL               string               `config:"tenant_url"`
+	TenantAPIVersion        string               `config:"tenant_api_version"`
 	DriveID                 string               `config:"drive_id"`
 	DriveType               string               `config:"drive_type"`
 	RootFolderID            string               `config:"root_folder_id"`
@@ -1108,7 +1136,7 @@ func NewFs(ctx context.Context, name, root string, m configmap.Mapper) (fs.Fs, e
 	rootURL := graphAPIEndpoint[opt.Region] + "/v1.0" + "/drives/" + opt.DriveID
 
 	if opt.TenantURL != "" {
-		rootURL = opt.TenantURL + "/v2.0" + "/drives/" + opt.DriveID
+		rootURL = tenantAPIEndpoint(opt.TenantURL, opt.TenantAPIVersion) + "/drives/" + opt.DriveID
 	}
 
 	oauthConfig, err := makeOauthConfig(ctx, opt)
@@ -2748,11 +2776,25 @@ func (o *Object) uploadMultipart(ctx context.Context, in io.Reader, src fs.Objec
 	position := int64(0)
 	for remaining > 0 {
 		n := min(remaining, int64(o.fs.opt.ChunkSize))
-		seg := readers.NewRepeatableReader(io.LimitReader(in, n))
+		// Buffer the chunk in memory from the global pool so it can be
+		// re-sent (or partly re-sent after a 416) on retry
+		rw := multipart.NewRW()
+		_, err = io.CopyN(rw, in, n)
+		if err != nil {
+			_ = rw.Close()
+			if err == io.EOF {
+				err = fmt.Errorf("expected %d bytes in input, but got %d: %w", size, position, io.ErrUnexpectedEOF)
+			}
+			return nil, err
+		}
 		fs.Debugf(o, "Uploading segment %d/%d size %d", position, size, n)
-		info, err = o.uploadFragment(ctx, uploadURL, position, size, seg, n, options...)
+		info, err = o.uploadFragment(ctx, uploadURL, position, size, rw, n, options...)
+		closeErr := rw.Close()
 		if err != nil {
 			return nil, err
+		}
+		if closeErr != nil {
+			return nil, closeErr
 		}
 		remaining -= n
 		position += n
@@ -2772,13 +2814,13 @@ func (o *Object) uploadMultipart(ctx context.Context, in io.Reader, src fs.Objec
 	return info, o.setMetaData(info)
 }
 
-// Update the content of a remote file within 4 MiB size in one single request
+// Update the content of a remote file smaller than maxSinglePartSize in one single request
 // (currently only used when size is exactly 0)
 // This function will set modtime and metadata after uploading, which will create a new version for the remote file
 func (o *Object) uploadSinglepart(ctx context.Context, in io.Reader, src fs.ObjectInfo, options ...fs.OpenOption) (info *api.Item, err error) {
 	size := src.Size()
-	if size < 0 || size > int64(maxSinglePartSize) {
-		return nil, fmt.Errorf("size passed into uploadSinglepart must be >= 0 and <= %v", maxSinglePartSize)
+	if size < 0 || size >= int64(maxSinglePartSize) {
+		return nil, fmt.Errorf("size passed into uploadSinglepart must be >= 0 and < %v", maxSinglePartSize)
 	}
 
 	fs.Debugf(o, "Starting singlepart upload")
@@ -2897,7 +2939,7 @@ func (o *Object) ID() string {
 func (f *Fs) parseNormalizedID(ID string) (string, string, string) {
 	var rootURL string
 	if f.opt.TenantURL != "" {
-		rootURL = f.opt.TenantURL + "/v2.0/drives"
+		rootURL = tenantAPIEndpoint(f.opt.TenantURL, f.opt.TenantAPIVersion) + "/drives"
 	} else {
 		rootURL = graphAPIEndpoint[f.opt.Region] + "/v1.0/drives"
 	}
@@ -3098,7 +3140,7 @@ func (f *Fs) changeNotifyNextChange(ctx context.Context, token string) (delta ap
 func (f *Fs) buildDriveDeltaOpts(token string) rest.Opts {
 	var rootURL string
 	if f.opt.TenantURL != "" {
-		rootURL = f.opt.TenantURL + "/v2.0/drives"
+		rootURL = tenantAPIEndpoint(f.opt.TenantURL, f.opt.TenantAPIVersion) + "/drives"
 	} else {
 		rootURL = graphAPIEndpoint[f.opt.Region] + "/v1.0/drives"
 	}
