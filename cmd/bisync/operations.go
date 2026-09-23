@@ -70,6 +70,12 @@ type queues struct {
 // Bisync handles lock file, performs bisync run and checks exit status
 func Bisync(ctx context.Context, fs1, fs2 fs.Fs, optArg *Options) (err error) {
 	opt := *optArg // ensure that input is never changed
+	if opt.MaxDeleteCount < 0 {
+		return errors.New("--max-delete-count must be a positive integer")
+	}
+	if opt.MaxDeleteCount == 0 {
+		opt.MaxDeleteCount = DefaultMaxDeleteCount
+	}
 	b := &bisyncRun{
 		fs1:       fs1,
 		fs2:       fs2,
@@ -343,13 +349,11 @@ func (b *bisyncRun) runLocked(octx context.Context) (err error) {
 		}
 	}
 
-	// Check for too many deleted files - possible error condition.
-	// Don't want to start deleting on the other side!
-	if !opt.Force {
-		if ds1.excessDeletes() || ds2.excessDeletes() {
-			b.abort = true
-			return errors.New("too many deletes")
-		}
+	// Check both delete guards after complete listings and before mutation.
+	// The absolute aggregate limit is never bypassed by --force.
+	if err = b.checkDeleteLimits(ds1, ds2); err != nil {
+		b.abort = true
+		return err
 	}
 
 	// Check for all files changed such as all dates changed due to DST change

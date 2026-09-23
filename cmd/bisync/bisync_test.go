@@ -1101,14 +1101,23 @@ func (b *bisyncTest) checkPreReqs(ctx context.Context, opt *bisync.Options) (con
 }
 
 func (b *bisyncTest) runBisync(ctx context.Context, args []string) (err error) {
+	// Scenario fixtures primarily exercise individual Bisync behaviors, so do
+	// not let the safety defaults mask their expected delete propagation. The
+	// max_delete scenarios and direct safety tests explicitly use the product
+	// defaults and verify their boundaries.
+	maxDelete := 100
+	if strings.HasPrefix(b.testCase, "max_delete") {
+		maxDelete = bisync.DefaultMaxDelete
+	}
 	opt := &bisync.Options{
-		Workdir:       b.workDir,
-		NoCleanup:     true,
-		SaveQueues:    true,
-		MaxDelete:     bisync.DefaultMaxDelete,
-		CheckFilename: bisync.DefaultCheckFilename,
-		CheckSync:     bisync.CheckSyncTrue,
-		TestFn:        b.TestFn,
+		Workdir:        b.workDir,
+		NoCleanup:      true,
+		SaveQueues:     true,
+		MaxDelete:      maxDelete,
+		MaxDeleteCount: 1_000_000,
+		CheckFilename:  bisync.DefaultCheckFilename,
+		CheckSync:      bisync.CheckSyncTrue,
+		TestFn:         b.TestFn,
 	}
 	ctx, opt = b.checkPreReqs(ctx, opt)
 	octx, ci := fs.AddConfig(ctx)
@@ -1152,6 +1161,9 @@ func (b *bisyncTest) runBisync(ctx context.Context, args []string) (err error) {
 		case "max-delete":
 			opt.MaxDelete, err = strconv.Atoi(val)
 			require.NoError(b.t, err, "parsing max-delete=%q", val)
+		case "max-delete-count":
+			opt.MaxDeleteCount, err = strconv.ParseInt(val, 10, 64)
+			require.NoError(b.t, err, "parsing max-delete-count=%q", val)
 		case "size-only":
 			ci.SizeOnly = true
 		case "ignore-size":
@@ -1897,6 +1909,7 @@ func (b *bisyncTest) listDir(dir string) (names []string) {
 		ignoreList := []string{
 			// ".lst-control", ".lst-dry-control", ".lst-old", ".lst-dry-old",
 			".DS_Store",
+			".lck", // persistent owner metadata and companion OS lock are nondeterministic test artifacts
 		}
 		for _, s := range ignoreList {
 			if strings.Contains(file, s) {
@@ -2023,4 +2036,67 @@ func (b *bisyncTest) replaceHex(remote string) string {
 		remote = strings.ReplaceAll(remote, fs.ConfigString(b.parent2), fs.ConfigStringFull(b.parent2))
 	}
 	return remote
+}
+
+func TestBisyncAggregateDeleteGuardPreservesOppositeSideFiles(t *testing.T) {
+	ctx := accounting.WithStatsGroup(context.Background(), random.String(8))
+	root := t.TempDir()
+	path1 := filepath.Join(root, "path1")
+	path2 := filepath.Join(root, "path2")
+	workDir := filepath.Join(root, "work")
+	require.NoError(t, os.MkdirAll(path1, 0700))
+	require.NoError(t, os.MkdirAll(path2, 0700))
+
+	fixedTime := time.Date(2020, time.January, 1, 0, 0, 0, 0, time.UTC)
+	for i := 0; i < 300; i++ {
+		name := fmt.Sprintf("file-%03d.txt", i)
+		for _, directory := range []string{path1, path2} {
+			filename := filepath.Join(directory, name)
+			require.NoError(t, os.WriteFile(filename, []byte(name), 0600))
+			require.NoError(t, os.Chtimes(filename, fixedTime, fixedTime))
+		}
+	}
+
+	fs1, err := fs.NewFs(ctx, path1)
+	require.NoError(t, err)
+	fs2, err := fs.NewFs(ctx, path2)
+	require.NoError(t, err)
+	initial := &bisync.Options{
+		Resync:         true,
+		Workdir:        workDir,
+		MaxDelete:      bisync.DefaultMaxDelete,
+		MaxDeleteCount: bisync.DefaultMaxDeleteCount,
+	}
+	require.NoError(t, bisync.Bisync(ctx, fs1, fs2, initial))
+
+	// Each side observes 13 deletions (below 10% of 300), but together they
+	// exceed the default absolute limit. --force may bypass only the percentage
+	// guard and must not propagate either side's missing files.
+	for i := 0; i < 13; i++ {
+		require.NoError(t, os.Remove(filepath.Join(path1, fmt.Sprintf("file-%03d.txt", i))))
+		require.NoError(t, os.Remove(filepath.Join(path2, fmt.Sprintf("file-%03d.txt", i+13))))
+	}
+
+	run := &bisync.Options{
+		Workdir:        workDir,
+		MaxDelete:      bisync.DefaultMaxDelete,
+		MaxDeleteCount: bisync.DefaultMaxDeleteCount,
+		Force:          true,
+	}
+	runCtx := accounting.WithStatsGroup(context.Background(), random.String(8))
+	err = bisync.Bisync(runCtx, fs1, fs2, run)
+	require.ErrorContains(t, err, "too many aggregate deletes")
+
+	for i := 0; i < 13; i++ {
+		_, err1 := os.Stat(filepath.Join(path1, fmt.Sprintf("file-%03d.txt", i)))
+		_, err2 := os.Stat(filepath.Join(path2, fmt.Sprintf("file-%03d.txt", i)))
+		require.True(t, os.IsNotExist(err1), "Path1 deletion %d should remain deleted", i)
+		require.NoError(t, err2, "Path2 copy of Path1 deletion %d must not be removed", i)
+
+		other := i + 13
+		_, err1 = os.Stat(filepath.Join(path1, fmt.Sprintf("file-%03d.txt", other)))
+		_, err2 = os.Stat(filepath.Join(path2, fmt.Sprintf("file-%03d.txt", other)))
+		require.NoError(t, err1, "Path1 copy of Path2 deletion %d must not be removed", other)
+		require.True(t, os.IsNotExist(err2), "Path2 deletion %d should remain deleted", other)
+	}
 }

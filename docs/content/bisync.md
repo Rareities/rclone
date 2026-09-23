@@ -123,7 +123,8 @@ Optional Flags:
       --retries-sleep Duration               Interval between retrying operations if they fail, e.g. 500ms, 60s, 5m (0 to disable) (default 0s)
       --slow-hash-sync-only                  Ignore slow checksums for listings and deltas, but still consider them during sync calls.
       --workdir string                       Use custom working dir - useful for testing. (default: {WORKDIR})
-      --max-delete PERCENT                   Safety check on maximum percentage of deleted files allowed. If exceeded, the bisync run will abort. (default: 50%)
+      --max-delete PERCENT                   Safety check on maximum percentage of deleted files allowed per path. If exceeded, the bisync run will abort. (default: 10%)
+      --max-delete-count COUNT               Maximum aggregate number of observed deletions across both paths. Must be positive; --force cannot bypass this guard. (default: 25)
   -n, --dry-run                              Go through the motions - No files are copied/deleted.
   -v, --verbose                              Increases logging verbosity. May be specified more than once for more details.
 ```
@@ -487,16 +488,26 @@ See also: [`Hasher`](/hasher/) backend,
 As a safety check, if greater than the `--max-delete` percent of files were
 deleted on either the Path1 or Path2 filesystem, then bisync will abort with
 a warning message, without making any changes.
-The default `--max-delete` is `50%`.
+The default `--max-delete` is `10%`.
 One way to trigger this limit is to rename a directory that contains more
 than half of your files. This will appear to bisync as a bunch of deleted
 files and a bunch of new files.
 This safety check is intended to block bisync from deleting all of the
 files on both filesystems due to a temporary network access issue, or if
 the user had inadvertently deleted the files on one side or the other.
-To force the sync, either set a different delete percentage limit,
+To force the sync past only this percentage check, either set a different delete percentage limit,
 e.g. `--max-delete 75` (allows up to 75% deletion), or use `--force`
-to bypass the check.
+to bypass the percentage check. The separate [`--max-delete-count`](#--max-delete-count)
+guard still applies, including when `--force` is used.
+
+### --max-delete-count
+
+Bisync also counts observed deletions on both paths together before it starts
+applying changes. The default maximum is `25`; if the aggregate is greater than
+the configured positive count, the run aborts before propagating changes to
+either path. Each path's observed deletion is counted, so the same name deleted
+on both paths contributes two to the aggregate. This absolute guard cannot be
+disabled with zero or bypassed with `--force`.
 
 Also see the [all files changed](#all-files-changed) check.
 
@@ -798,45 +809,29 @@ middle of a sync -- that is what `--recover` is for.
 
 ### --max-lock
 
-Bisync uses [lock files](#lock-file) as a safety feature to prevent
-interference from other bisync runs while it is running. Bisync normally
-removes these lock files at the end of a run, but if bisync is abruptly
-interrupted, these files will be left behind. By default, they will lock out
-all future runs, until the user has a chance to manually check things out and
-remove the lock. As an alternative, `--max-lock` can be used to make them
-automatically expire after a certain period of time, so that future runs are
-not locked out forever, and auto-recovery is possible. `--max-lock` can be any
-duration `2m` or greater (or `0` to disable). If set, lock files older than
-this will be considered "expired", and future runs will be allowed to disregard
-them and proceed. (Note that the `--max-lock` duration must be set by the
-process that left the lock file -- not the later one interpreting it.)
+Bisync uses a persistent OS advisory lock on a companion `.lck.guard` file to
+serialize runs of the same profile. The `.lck` file stores versioned owner
+metadata and a diagnostic heartbeat. A successful run marks the metadata as
+released; neither file is deleted, so processes waiting on a lock cannot end
+up locking a different file.
 
-If set, bisync will also "renew" these lock files every `--max-lock minus one
-minute` throughout a run, for extra safety. (For example, with `--max-lock 5m`,
-bisync would renew the lock file (for another 5 minutes) every 4 minutes until
-the run has completed.) In other words, it should not be possible for a lock
-file to pass its expiration time while the process that created it is still
-running -- and you can therefore be reasonably sure that any *expired* lock
-file you may find was left there by an interrupted run, not one that is still
-running and just taking awhile.
+`--max-lock` controls only the diagnostic heartbeat interval. It accepts
+`2m` or greater; `0` disables heartbeat updates. It never expires or steals
+an OS lock based on elapsed time. If a process exits or is killed, the
+operating system releases its advisory lock; a compatible Bisync run can then
+reclaim a version-2 metadata record after it acquires the guard.
 
-If a lock file exists but its contents are unreadable (for example, due to an
-incomplete write or disk error), it is treated as expired when `--max-lock` is
-set to a value greater than `0`. If `--max-lock` is `0` or not set, an
-unreadable lock file will produce an error and block future runs until removed
-manually.
+Legacy, unsupported, or unreadable lock metadata fails closed, even when
+`--max-lock` is set. Before recovering such a profile, verify that all older
+Bisync processes are stopped and inspect the profile's listing/recovery state.
+Only then may an operator remove the legacy lock metadata explicitly. A stale
+timestamp or heartbeat alone is never sufficient evidence that a run is dead.
 
-If `--max-lock` is `0` or not set, the default is that lock files will never
-expire, and will block future runs (of these same two bisync paths)
-indefinitely.
-
-For maximum resilience from disruptions, consider setting a relatively short
-duration like `--max-lock 2m` along with [`--resilient`](#resilient) and
-[`--recover`](#recover), and a relatively frequent [cron schedule](#cron). The
-result will be a very robust "set-it-and-forget-it" bisync run that can
-automatically bounce back from almost any interruption it might encounter,
-without requiring the user to get involved and run a `--resync`. (See also:
-[Graceful Shutdown](#graceful-shutdown) mode)
+During a version transition, do not run old and new rclone versions against the
+same Bisync profile concurrently. Older versions refuse an active version-2
+lock because it has no expiry timestamp; the new version refuses legacy lock
+metadata until it is explicitly verified and recovered. Keep the lock files
+and profile state together when moving or backing up a Bisync work directory.
 
 ### --backup-dir1 and --backup-dir2
 
@@ -986,16 +981,14 @@ See also: [`--resilient`](#resilient), [`--recover`](#recover),
 
 ### Lock file
 
-When bisync is running, a lock file is created in the bisync working directory,
-typically at `~/.cache/rclone/bisync/PATH1..PATH2.lck` on Linux.
-If bisync should crash or hang, the lock file will remain in place and block
-any further runs of bisync *for the same paths*.
-Delete the lock file as part of debugging the situation.
-The lock file effectively blocks follow-on (e.g., scheduled by *cron*) runs
-when the prior invocation is taking a long time.
-The lock file contains *PID* of the blocking process, which may help in debug.
-Lock files can be set to automatically expire after a certain amount of time,
-using the [`--max-lock`](#max-lock) flag.
+When bisync is running, persistent `.lck` metadata and `.lck.guard` OS-lock
+files are kept in the bisync working directory, typically beneath
+`~/.cache/rclone/bisync/` on Linux. The metadata contains the owner PID, which
+may help with diagnostics. A live OS lock blocks concurrent runs of the same
+profile regardless of how long its heartbeat has been unchanged. After a crash,
+the OS releases the guard; version-2 metadata can be reclaimed safely by a
+compatible run. Legacy or unreadable metadata requires explicit operator
+verification before recovery; do not delete it solely because it looks old.
 
 **Note**
 that while concurrent bisync runs are allowed, *be very cautious*
@@ -1034,10 +1027,10 @@ If you plan to use Graceful Shutdown mode, it is recommended to use
 [`--resilient`](#resilient) and [`--recover`](#recover), and it is important to
 NOT use [`--inplace`](/docs/#inplace), otherwise you risk leaving
 partially-written files on one side, which may be confused for real files on
-the next run. Note also that in the event of an abrupt interruption, a [lock
-file](#lock-file) will be left behind to block concurrent runs. You will need
-to delete it before you can proceed with the next run (or wait for it to
-expire on its own, if using `--max-lock`.)
+the next run. Note also that an abrupt interruption leaves the persistent lock
+metadata behind. The OS releases the process guard when the process exits, but
+the profile's listings and recovery state must still be reviewed before
+proceeding; an unreadable or legacy lock requires explicit operator recovery.
 
 ## Limitations
 
