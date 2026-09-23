@@ -259,3 +259,75 @@ Standalone WP08 acceptance remains partial: full `./cmd/bisync` tests, package v
 Android/arm64 cross-build passed; process-kill/race stress, actual Android instrumentation,
 Galaxy S26 / One UI 8.5/9 and live Proton acceptance are **NOT RUN**. Keep existing Bisync
 listings/backups and profiles untouched; the CLI inspector never restores or initializes them.
+
+## WP09 — Proton backend hardening and dependency-candidate audit — 2026-09-23
+
+**Local implementation:** commit `becac91d51f48013df0fdc87da78d7d6ffafa6ed` updates only
+`backend/protondrive/protondrive.go` and its internal tests. Name-hash lookup now falls back to
+decrypted directory names only on a clean hash miss, propagates listing errors, filters file vs
+folder kinds, and treats a matching entry without link metadata as an error. Move and DirMove
+invalidate both source and destination subtrees using each filesystem's own cache/path encoder.
+Reusable-login construction errors no longer erase saved credentials before password fallback;
+definitive SDK deauthentication still clears credentials through the per-Fs callback.
+
+**Local evidence:** `go test -mod=readonly ./backend/protondrive -count=1`,
+`go vet -mod=readonly ./backend/protondrive`, `gofmt -d` for both changed files, and
+`git diff --check` passed on the committed source. `go test -mod=readonly
+./backend/internxt ./backend/drime -count=1` also passed, preserving non-Proton backend coverage.
+Tests use synthetic maps/entries and no Proton credentials or cloud data. Race-detector testing
+is **NOT RUN** (`CGO_ENABLED=0`; no GCC/Clang toolchain is installed).
+
+**Reviewed upstream candidates (refreshed 2026-09-23):**
+
+- rclone/rclone#9851 hash fallback (`868b105143a9b3b1f0fefc41c6d151f17d5b1c2b`) and #9813
+  destination-cache invalidation (`e5328dabf194f5fc4cfc02ab27d1f4d3b5b19b61`) remain open.
+  The backend-local implementation is adapted with stricter malformed-entry behavior and
+  source/destination `Fs` ownership; current Rareities `go.mod` stays unchanged.
+- Proton-API-Bridge#8 (`47d69aac6987f1c91d454b0d61edc8267d6a83e5`) remains open. Its exact
+  isolated checkout passed `go test -mod=readonly ./...` and `go vet -mod=readonly ./...`.
+  Race tests are **NOT RUN** for the toolchain reason above. No CI status checks were attached
+  to the commit in the refreshed GitHub API response; it is not pinned in production.
+- go-proton-api#10 (`9dcca00ba1dc779a8958c9d4988b79ce2f9f3233`) and
+  Proton-API-Bridge#9 (`6f7fc6530d4a77d33d08e36464e018600ae4b93d`) remain open. API10 root tests,
+  the focused refresh-hook tests, and vet passed. Its full `go test ./...` failed in the
+  large `server` test package after 139.986s with Windows socket-bind/connect errors;
+  the previously failing label-test group passed when rerun alone. Bridge9 full tests and vet
+  passed in a temporary `go.work` paired with the API10 checkout. No PR CI status checks were
+  attached to either exact head.
+- A test-only regression added to the isolated API10 checkout proved that its current hook will
+  adopt a *different UID* from a replaced config and can return the other account's user data.
+  A temporary local guard requiring the persisted UID to equal the live client UID (and requiring
+  nonempty UID/access/refresh tokens) made all focused hook tests pass. This audit patch is not in
+  Rareities/rclone or an upstream commit; do not adopt API10 until identity binding is reviewed,
+  upstreamed, and versioned.
+- go-proton-api#5 (`cdb5bd158f14d8b763035b13cf950e34e416ec89`) and
+  Proton-API-Bridge#4 (`b0b05e7b89f9605ccb6af1f4682000f3275fea3f`) provide newer SDK base/move
+  and revision compatibility, but both refreshed PRs report `mergeable: false`. API5's focused
+  v2 route tests and vet passed. Bridge4's focused tests plus vet passed except
+  `TestSetMoveLinkSignatureAddressCompat`, which fails because the helper leaves
+  `SignatureAddress` empty while its test expects it to be populated. No live SDK/Proton move or
+  revision acceptance was run. This stack is not pinned.
+- Bridge#3 (`9ba9207356aef0eb85acb31285bf28feeb4ffd84`) includes deleting a draft link when
+  revision listing fails; rejected because an unavailable list cannot authorize deletion.
+  Bridge#6 (`b75484eb1509c571c10d2c67547d12366638e729`) skips signature verification; rejected.
+  Bridge#7 (`a4a88cd59199faa88a25181ef164d8779499bb03`) removes a 5-second delay without a
+  bounded consistency proof; defer pending read-after-move evidence.
+
+**Dependency/pin decision:** Rareities/rclone remains on Proton-API-Bridge v1.0.5,
+go-proton-api v1.0.4, and gopenpgp/v3 v3.4.1. No production `replace`, unpublished local
+dependency, unmerged PR head, or unverified SDK behavior was introduced. `NewFs` currently
+constructs separate `ProtonDrive` instances; no package-global Fs coalescing lock exists, so no
+global lock/deadlock risk was added. The optional bandwidth/browser-login work remains out of
+this bounded slice.
+
+**Status:** WP09 remains **PARTIAL**. Hash lookup/cache invalidation and transient credential
+preservation are implemented at the rclone backend owner and independently tested. Worker
+cleanup, safe refresh preservation, and current-SDK revision/move interoperability remain gated
+on upstream fixes that pass identity/safety review and become reproducibly pinnable. Live
+Proton, disposable-vault mutations, official-client revision round-trips, and Samsung acceptance
+are **NOT RUN**. Release readiness is not claimed.
+
+**Rollback:** revert only local commit `becac91`; retain per-Fs callback ownership from
+`8b8d665`. Do not roll dependencies forward to any reviewed PR head until its source, tests,
+version/provenance, and app integration are verified. Never delete or recreate remote objects to
+work around revision failures.
