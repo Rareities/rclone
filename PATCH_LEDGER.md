@@ -238,3 +238,24 @@ recovery before broad integration or release decisions.
 the preexisting native lock/deletion protections. The CloudBridge pin stays on its previous
 verified SHA until the new immutable branch commit is fetched and its tree/native artifact are
 verified. Never delete or auto-prune existing listings, backups, profiles, or recovery artifacts.
+
+## WP08 publication and app-pin verification — 2026-09-23
+
+The WP08 source and ledger were published to `Rareities/rclone` branch `codex/luna-engine` by a
+non-force fast-forward from `ec863fdcd9e1ce0d13357f791d5528aab10bf0ec` to
+`d53551e1722305268c6072263f11066f1278a4a0`. Published tree
+`98c402c28fda112c56b543b3104841435fb8cdf6` exactly matches the locally tested tree (source
+commit `a2eec9f17e9624a8ed78afeccf520c5716270b1f` plus the WP08 documentation ledger commit).
+CloudBridge now pins that immutable commit; profile fixtures were updated to match.
+
+This ref refresh does not imply release provenance: GitHub reports the API-created commit as
+unsigned, no PR-triggered CI run is evidenced, and neither default branch was changed. The app's
+prior full `:rclone:buildAll` integration run fetched this exact SHA and built
+`armeabi-v7a`, `arm64-v8a`, `x86`, and `x86_64`; the later app-only v13 migration verification
+used `-x :rclone:buildAll` because the engine source/pin was unchanged. Native output hashes and
+test details remain in the app execution ledger. No APK or release artifact is implied.
+
+Standalone WP08 acceptance remains partial: full `./cmd/bisync` tests, package vet and
+Android/arm64 cross-build passed; process-kill/race stress, actual Android instrumentation,
+Galaxy S26 / One UI 8.5/9 and live Proton acceptance are **NOT RUN**. Keep existing Bisync
+listings/backups and profiles untouched; the CLI inspector never restores or initializes them.
