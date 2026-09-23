@@ -14,6 +14,7 @@ import (
 
 	"github.com/coreos/go-semver/semver"
 	protonDriveAPI "github.com/rclone/Proton-API-Bridge"
+	protonCommon "github.com/rclone/Proton-API-Bridge/common"
 	"github.com/rclone/go-proton-api"
 
 	"github.com/pquerna/otp/totp"
@@ -372,13 +373,6 @@ func (s *protonAuthState) set(uid, accessToken, refreshToken, saltedKeyPass stri
 	s.saltedKeyPass = saltedKeyPass
 }
 
-func (s *protonAuthState) clear() {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	clearConfigMap(s.mapper)
-	s.saltedKeyPass = ""
-}
-
 func protonDriveAppVersionFromRcloneVersion(version string) string {
 	const fallback = "external-drive-rclone@1.0.0-stable"
 
@@ -477,7 +471,18 @@ func (l protonLogger) Errorf(format string, v ...any) { fs.Errorf(l.f, format, v
 func (l protonLogger) Warnf(format string, v ...any)  { fs.Logf(l.f, format, v...) }
 func (l protonLogger) Debugf(format string, v ...any) { fs.Debugf(l.f, format, v...) }
 
+type protonDriveConstructor func(
+	context.Context,
+	*protonCommon.Config,
+	proton.AuthHandler,
+	proton.Handler,
+) (*protonDriveAPI.ProtonDrive, *protonCommon.ProtonDriveCredential, error)
+
 func newProtonDrive(ctx context.Context, f *Fs, opt *Options, m configmap.Mapper) (*protonDriveAPI.ProtonDrive, error) {
+	return newProtonDriveWithConstructor(ctx, f, opt, m, protonDriveAPI.NewProtonDrive)
+}
+
+func newProtonDriveWithConstructor(ctx context.Context, f *Fs, opt *Options, m configmap.Mapper, construct protonDriveConstructor) (*protonDriveAPI.ProtonDrive, error) {
 	config := protonDriveAPI.NewDefaultConfig()
 	config.AppVersion = opt.AppVersion
 	if config.AppVersion == "" {
@@ -510,11 +515,9 @@ func newProtonDrive(ctx context.Context, f *Fs, opt *Options, m configmap.Mapper
 		config.ReusableCredential.RefreshToken = refreshToken
 		config.ReusableCredential.SaltedKeyPass = saltedKeyPass
 
-		protonDrive /* credential will be nil since access credentials are passed in */, _, err := protonDriveAPI.NewProtonDrive(ctx, config, authState.authHandler, authState.deAuthHandler)
+		protonDrive /* credential will be nil since access credentials are passed in */, _, err := construct(ctx, config, authState.authHandler, authState.deAuthHandler)
 		if err != nil {
-			fs.Debugf(f, "Cached credential doesn't work, clearing and using the fallback login method")
-			// clear the access token on failure
-			authState.clear()
+			fs.Debugf(f, "Cached credentials could not initialize Proton Drive; trying the fallback login method")
 
 			fs.Debugf(f, "couldn't initialize a new proton drive instance using cached credentials: %v", err)
 			// we fallback to username+password login -> don't throw an error here
@@ -540,7 +543,7 @@ func newProtonDrive(ctx context.Context, f *Fs, opt *Options, m configmap.Mapper
 		}
 		config.FirstLoginCredential.TwoFA = code
 	}
-	protonDrive, auth, err := protonDriveAPI.NewProtonDrive(ctx, config, authState.authHandler, authState.deAuthHandler)
+	protonDrive, auth, err := construct(ctx, config, authState.authHandler, authState.deAuthHandler)
 	if err != nil {
 		return nil, fmt.Errorf("couldn't initialize a new proton drive instance: %w", err)
 	}
@@ -680,6 +683,67 @@ func (f *Fs) NewObject(ctx context.Context, remote string) (fs.Object, error) {
 	return f.newObject(ctx, remote)
 }
 
+func searchByNameWithFallback(
+	ctx context.Context,
+	folderLinkID, leaf string,
+	searchFile, searchFolder bool,
+	searchByHash func(context.Context, string, string, bool, bool) (*proton.Link, error),
+	listDirectory func(context.Context, string) ([]*protonDriveAPI.ProtonDirectoryData, error),
+) (*proton.Link, error) {
+	link, err := searchByHash(ctx, folderLinkID, leaf, searchFile, searchFolder)
+	if err != nil || link != nil {
+		return link, err
+	}
+
+	entries, err := listDirectory(ctx, folderLinkID)
+	if err != nil {
+		return nil, err
+	}
+	for _, entry := range entries {
+		if entry == nil || entry.Name != leaf {
+			continue
+		}
+		if !(entry.IsFolder && searchFolder || !entry.IsFolder && searchFile) {
+			continue
+		}
+		if entry.Link == nil {
+			return nil, fmt.Errorf("Proton Drive returned a matching entry without link metadata")
+		}
+		return entry.Link, nil
+	}
+	return nil, nil
+}
+
+func (f *Fs) searchByNameInFolderByID(
+	ctx context.Context,
+	folderLinkID, leaf string,
+	searchFile, searchFolder bool,
+) (*proton.Link, error) {
+	return searchByNameWithFallback(
+		ctx, folderLinkID, leaf, searchFile, searchFolder,
+		func(ctx context.Context, folderID, name string, files, folders bool) (*proton.Link, error) {
+			var link *proton.Link
+			var callErr error
+			err := f.pacer.Call(func() (bool, error) {
+				link, callErr = f.protonDrive.SearchByNameInActiveFolderByID(
+					ctx, folderID, name, files, folders, proton.LinkStateActive,
+				)
+				return shouldRetry(ctx, callErr)
+			})
+			return link, err
+		},
+		func(ctx context.Context, folderID string) ([]*protonDriveAPI.ProtonDirectoryData, error) {
+			var entries []*protonDriveAPI.ProtonDirectoryData
+			var callErr error
+			err := f.pacer.Call(func() (bool, error) {
+				entries, callErr = f.protonDrive.ListDirectory(ctx, folderID)
+				return shouldRetry(ctx, callErr)
+			})
+			return entries, err
+		},
+	)
+}
+
 func (f *Fs) getObjectLink(ctx context.Context, remote string) (*proton.Link, error) {
 	// attempt to locate the file
 	leaf, folderLinkID, err := f.dirCache.FindPath(ctx, f.sanitizePath(remote), false)
@@ -692,11 +756,8 @@ func (f *Fs) getObjectLink(ctx context.Context, remote string) (*proton.Link, er
 		return nil, err
 	}
 
-	var link *proton.Link
-	if err = f.pacer.Call(func() (bool, error) {
-		link, err = f.protonDrive.SearchByNameInActiveFolderByID(ctx, folderLinkID, leaf, true, false, proton.LinkStateActive)
-		return shouldRetry(ctx, err)
-	}); err != nil {
+	link, err := f.searchByNameInFolderByID(ctx, folderLinkID, leaf, true, false)
+	if err != nil {
 		return nil, err
 	}
 	if link == nil { // both link and err are nil, file not found
@@ -813,12 +874,8 @@ func (f *Fs) List(ctx context.Context, dir string) (fs.DirEntries, error) {
 func (f *Fs) FindLeaf(ctx context.Context, pathID, leaf string) (string, bool, error) {
 	/* f.opt.Enc.FromStandardName(leaf) not required since the DirCache only process sanitized path */
 
-	var link *proton.Link
-	var err error
-	if err = f.pacer.Call(func() (bool, error) {
-		link, err = f.protonDrive.SearchByNameInActiveFolderByID(ctx, pathID, leaf, false, true, proton.LinkStateActive)
-		return shouldRetry(ctx, err)
-	}); err != nil {
+	link, err := f.searchByNameInFolderByID(ctx, pathID, leaf, false, true)
+	if err != nil {
 		return "", false, err
 	}
 	if link == nil {
@@ -1211,6 +1268,15 @@ func (f *Fs) Disconnect(ctx context.Context) error {
 	})
 }
 
+func flushMoveCaches(sourceCache, destinationCache *dircache.DirCache, sourceRemote, destinationRemote string) {
+	if sourceCache != nil {
+		sourceCache.FlushDir(sourceRemote)
+	}
+	if destinationCache != nil {
+		destinationCache.FlushDir(destinationRemote)
+	}
+}
+
 // Move src to this remote using server-side move operations.
 //
 // This is stored with the remote path given.
@@ -1251,7 +1317,12 @@ func (f *Fs) Move(ctx context.Context, src fs.Object, remote string) (fs.Object,
 		return nil, err
 	}
 
-	f.dirCache.FlushDir(f.sanitizePath(src.Remote()))
+	flushMoveCaches(
+		srcObj.fs.dirCache,
+		f.dirCache,
+		srcObj.fs.sanitizePath(srcObj.Remote()),
+		f.sanitizePath(remote),
+	)
 
 	return f.NewObject(ctx, remote)
 }
@@ -1283,7 +1354,12 @@ func (f *Fs) DirMove(ctx context.Context, src fs.Fs, srcRemote, dstRemote string
 		return err
 	}
 
-	srcFs.dirCache.FlushDir(f.sanitizePath(srcRemote))
+	flushMoveCaches(
+		srcFs.dirCache,
+		f.dirCache,
+		srcFs.sanitizePath(srcRemote),
+		f.sanitizePath(dstRemote),
+	)
 
 	return nil
 }

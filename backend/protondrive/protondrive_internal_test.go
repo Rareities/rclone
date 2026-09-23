@@ -7,8 +7,12 @@ import (
 	"regexp"
 	"testing"
 
+	protonDriveAPI "github.com/rclone/Proton-API-Bridge"
+	protonCommon "github.com/rclone/Proton-API-Bridge/common"
 	"github.com/rclone/go-proton-api"
+	"github.com/rclone/rclone/fs"
 	"github.com/rclone/rclone/fs/config/configmap"
+	"github.com/rclone/rclone/lib/dircache"
 	"github.com/stretchr/testify/assert"
 )
 
@@ -133,4 +137,136 @@ func TestProtonAuthHandlersStayBoundToTheirConfigMap(t *testing.T) {
 	assert.Equal(t, "old-access-second", secondMapper[clientAccessTokenKey])
 	assert.Equal(t, "old-refresh-second", secondMapper[clientRefreshTokenKey])
 	assert.Equal(t, "salt-second", secondMapper[clientSaltedKeyPassKey])
+}
+
+func TestSearchByNameWithFallbackFindsNewStandardVaultName(t *testing.T) {
+	ctx := context.Background()
+	want := &proton.Link{LinkID: "standard-vault-link"}
+	listCalls := 0
+	got, err := searchByNameWithFallback(
+		ctx, "folder-id", "notes.md", true, false,
+		func(context.Context, string, string, bool, bool) (*proton.Link, error) {
+			return nil, nil // The server-side legacy name-hash lookup misses.
+		},
+		func(_ context.Context, folderID string) ([]*protonDriveAPI.ProtonDirectoryData, error) {
+			listCalls++
+			assert.Equal(t, "folder-id", folderID)
+			return []*protonDriveAPI.ProtonDirectoryData{
+				{Name: "notes.md", Link: want, IsFolder: false},
+				{Name: "archive", Link: &proton.Link{LinkID: "folder-link"}, IsFolder: true},
+			}, nil
+		},
+	)
+
+	assert.NoError(t, err)
+	assert.Same(t, want, got)
+	assert.Equal(t, 1, listCalls)
+}
+
+func TestSearchByNameWithFallbackDoesNotListOnHashHit(t *testing.T) {
+	want := &proton.Link{LinkID: "hash-hit"}
+	listCalls := 0
+	got, err := searchByNameWithFallback(
+		context.Background(), "folder-id", "notes.md", true, false,
+		func(context.Context, string, string, bool, bool) (*proton.Link, error) {
+			return want, nil
+		},
+		func(context.Context, string) ([]*protonDriveAPI.ProtonDirectoryData, error) {
+			listCalls++
+			return nil, nil
+		},
+	)
+	assert.NoError(t, err)
+	assert.Same(t, want, got)
+	assert.Zero(t, listCalls)
+}
+
+func TestSearchByNameWithFallbackHonorsFileAndFolderKinds(t *testing.T) {
+	fileLink := &proton.Link{LinkID: "file-link"}
+	folderLink := &proton.Link{LinkID: "folder-link"}
+	entries := []*protonDriveAPI.ProtonDirectoryData{
+		{Name: "item", Link: folderLink, IsFolder: true},
+		{Name: "item", Link: fileLink, IsFolder: false},
+	}
+	search := func(searchFile, searchFolder bool) *proton.Link {
+		got, err := searchByNameWithFallback(
+			context.Background(), "folder-id", "item", searchFile, searchFolder,
+			func(context.Context, string, string, bool, bool) (*proton.Link, error) { return nil, nil },
+			func(context.Context, string) ([]*protonDriveAPI.ProtonDirectoryData, error) { return entries, nil },
+		)
+		assert.NoError(t, err)
+		return got
+	}
+	assert.Same(t, fileLink, search(true, false))
+	assert.Same(t, folderLink, search(false, true))
+	assert.Same(t, folderLink, search(true, true))
+}
+
+func TestSearchByNameWithFallbackPropagatesListingFailure(t *testing.T) {
+	wantErr := errors.New("synthetic listing failure")
+	_, err := searchByNameWithFallback(
+		context.Background(), "folder-id", "notes.md", true, false,
+		func(context.Context, string, string, bool, bool) (*proton.Link, error) { return nil, nil },
+		func(context.Context, string) ([]*protonDriveAPI.ProtonDirectoryData, error) { return nil, wantErr },
+	)
+	assert.ErrorIs(t, err, wantErr)
+}
+
+func TestSearchByNameWithFallbackDoesNotTreatMalformedMatchAsMissing(t *testing.T) {
+	_, err := searchByNameWithFallback(
+		context.Background(), "folder-id", "notes.md", true, false,
+		func(context.Context, string, string, bool, bool) (*proton.Link, error) { return nil, nil },
+		func(context.Context, string) ([]*protonDriveAPI.ProtonDirectoryData, error) {
+			return []*protonDriveAPI.ProtonDirectoryData{{Name: "notes.md", IsFolder: false}}, nil
+		},
+	)
+	assert.Error(t, err, "a matching but incomplete provider entry must not look like a missing object")
+}
+
+func TestFlushMoveCachesInvalidatesSourceAndDestinationSubtrees(t *testing.T) {
+	sourceCache := dircache.New("", "source-root", nil)
+	destinationCache := dircache.New("", "destination-root", nil)
+	sourceCache.Put("old/note", "source-note")
+	sourceCache.Put("old/note/child", "source-child")
+	destinationCache.Put("new/note", "destination-note")
+	destinationCache.Put("new/note/child", "destination-child")
+
+	flushMoveCaches(sourceCache, destinationCache, "old/note", "new/note")
+
+	_, sourceFound := sourceCache.Get("old/note")
+	_, sourceChildFound := sourceCache.Get("old/note/child")
+	_, destinationFound := destinationCache.Get("new/note")
+	_, destinationChildFound := destinationCache.Get("new/note/child")
+	assert.False(t, sourceFound)
+	assert.False(t, sourceChildFound)
+	assert.False(t, destinationFound)
+	assert.False(t, destinationChildFound)
+}
+
+func TestReusableLoginFailurePreservesSavedCredentials(t *testing.T) {
+	mapper := configmap.Simple{}
+	setConfigMap(mapper, "saved-uid", "saved-access", "saved-refresh", "saved-salt")
+	factoryCalls := 0
+	_, err := newProtonDriveWithConstructor(
+		context.Background(),
+		&Fs{ci: &fs.ConfigInfo{}},
+		&Options{Username: "user@example.test", Password: "synthetic-password"},
+		mapper,
+		func(_ context.Context, config *protonCommon.Config, _ proton.AuthHandler, _ proton.Handler) (*protonDriveAPI.ProtonDrive, *protonCommon.ProtonDriveCredential, error) {
+			factoryCalls++
+			if factoryCalls == 1 {
+				assert.True(t, config.UseReusableLogin)
+			}
+			return nil, nil, errors.New("synthetic transient network failure")
+		},
+	)
+
+	assert.Error(t, err)
+	assert.Equal(t, 2, factoryCalls, "cached login should retain the existing password-login fallback")
+	uid, access, refresh, salt, ok := getConfigMap(mapper)
+	assert.True(t, ok)
+	assert.Equal(t, "saved-uid", uid)
+	assert.Equal(t, "saved-access", access)
+	assert.Equal(t, "saved-refresh", refresh)
+	assert.Equal(t, "saved-salt", salt)
 }
