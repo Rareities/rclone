@@ -364,3 +364,51 @@ restore/recovery, failure/kill injection, integration against the new SHA, Galax
 
 **Rollback:** revert only `175c350`; retain the previous read-only inspector and all existing
 Bisync state/listings/backups. Do not prune dry-run or recovery artifacts as a workaround.
+
+## WP08 path-free native dry-run summary — 2026-09-23
+
+Source commit: `12ef1fd7e200fd47444c4c7044d23856d80fda04`
+(`bisync: expose path-free dry-run preview summary`).
+
+1. **Objective:** provide CloudBridge a stable, bounded native summary for an explicitly requested
+   Bisync dry-run without parsing human logs or treating the summary as execution authorization.
+2. **Scope:** CLI-only `--preview-json`; versioned result fields for status, planned transfer/byte/
+   file-delete/directory-delete counts, error count and explicit unknown conflict count; stats getter;
+   CLI/RC and Bisync docs.
+3. **Out of scope:** app preview persistence/UI/worker, initialization/recovery, backup/restore,
+   exact conflict enumeration, provider/device acceptance, Proton changes, or release claims.
+4. **Preconditions:** prior native inspector/dry-run state work (`a2eec9f`, `175c350`); no
+   dependency change. CloudBridge continues to pin the previously published immutable engine ref
+   until this source is safely published and integration-tested.
+5. **Design:** require `--dry-run` and reject `--inspect-state` before filesystem construction;
+   emit exactly the versioned JSON summary after a successful Bisync return. Mark native errors or
+   retry/fatal conditions `INCOMPLETE`; never serialize endpoint paths, object names, or error
+   prose. Set `conflictsKnown:false` rather than implying native conflict enumeration.
+6. **Safety invariants:** preview output does not authorize a later mutation and is not a snapshot;
+   failed runs cannot emit a successful summary; inspection remains a distinct read-only operation;
+   no test data or provider state persists after the disposable CLI smoke.
+7. **Implementation:** commit `12ef1fd` adds `cmd/bisync/preview.go` and tests, validates flag
+   combinations before `cmd.NewFsSrcDstFiles`, writes the summary only after `Bisync` succeeds,
+   adds `StatsInfo.GetDeletedDirs`, and documents the CLI-only protocol.
+8. **Reuse:** existing native Bisync dry-run and accounting stats; no replacement for native
+   comparison, deletion guards, or accepted-state inspection.
+9. **Retired:** no prior behavior retired; the summary avoids a future app dependency on parsing
+   path-bearing human output.
+10. **Failure behavior:** invalid flag combinations return an error before backend construction;
+    native execution errors return normally without a JSON success object; a completed dry run
+    with native accounting/retry errors is labeled `INCOMPLETE`.
+11. **Tests:** Windows Go 1.26.8: `go test -mod=readonly ./cmd/bisync ./fs/accounting -count=1`
+    PASS (37.649s and 1.394s); `go vet -mod=readonly ./cmd/bisync ./fs/accounting` PASS;
+    `go build -buildvcs=false -mod=readonly ./...` PASS; `GOOS=android GOARCH=arm64 go build
+    -buildvcs=false -mod=readonly ./cmd/bisync` PASS; `gofmt` and targeted `git diff --check`
+    PASS. A disposable local CLI smoke produced one stdout JSON object with `COMPLETE`, one
+    planned transfer and 26 bytes; without `--dry-run`, the command returned nonzero and rejected
+    the option. Both temporary roots/config/workdir were removed after exact path validation.
+12. **Acceptance:** PARTIAL native preview protocol only. Commit is local, not yet published or
+    pinned by CloudBridge. App-owned fresh preview/known-unknown persistence, cancellation,
+    process-death behavior, backup/restore/fault boundaries and init/recovery remain open.
+    Proton disposable tests and Galaxy S26 / One UI 8.5/9 acceptance remain **NOT RUN**. No APK,
+    signing, PR/CI or release gate is implied.
+13. **Rollback:** revert only `12ef1fd`; retain the previous Bisync command, native inspector,
+    deletion protections and accepted listings. Never prune state or treat dry-run artifacts as
+    a recovery baseline.
