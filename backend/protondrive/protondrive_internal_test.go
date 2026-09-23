@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/rclone/go-proton-api"
+	"github.com/rclone/rclone/fs/config/configmap"
 	"github.com/stretchr/testify/assert"
 )
 
@@ -94,4 +95,42 @@ func TestShouldRetry(t *testing.T) {
 			assert.Equal(t, tc.wantRetry, gotRetry)
 		})
 	}
+}
+
+func TestProtonAuthHandlersStayBoundToTheirConfigMap(t *testing.T) {
+	firstMapper := configmap.Simple{}
+	secondMapper := configmap.Simple{}
+
+	// Each Proton client retains its callback receiver. A later filesystem must
+	// not redirect an earlier client's refresh or deauth callback.
+	firstAuthState := &protonAuthState{mapper: firstMapper, saltedKeyPass: "salt-first"}
+	firstAuthState.set("old-uid-first", "old-access-first", "old-refresh-first", "salt-first")
+	firstAuthHandler, firstDeAuthHandler := firstAuthState.authHandler, firstAuthState.deAuthHandler
+	secondAuthState := &protonAuthState{mapper: secondMapper, saltedKeyPass: "salt-second"}
+	secondAuthState.set("old-uid-second", "old-access-second", "old-refresh-second", "salt-second")
+
+	firstAuthHandler(proton.Auth{
+		UID:          "new-uid-first",
+		AccessToken:  "new-access-first",
+		RefreshToken: "new-refresh-first",
+	})
+
+	assert.Equal(t, "new-uid-first", firstMapper[clientUIDKey])
+	assert.Equal(t, "new-access-first", firstMapper[clientAccessTokenKey])
+	assert.Equal(t, "new-refresh-first", firstMapper[clientRefreshTokenKey])
+	assert.Equal(t, "salt-first", firstMapper[clientSaltedKeyPassKey])
+	assert.Equal(t, "old-uid-second", secondMapper[clientUIDKey])
+	assert.Equal(t, "old-access-second", secondMapper[clientAccessTokenKey])
+	assert.Equal(t, "old-refresh-second", secondMapper[clientRefreshTokenKey])
+	assert.Equal(t, "salt-second", secondMapper[clientSaltedKeyPassKey])
+
+	firstDeAuthHandler()
+	assert.Equal(t, "", firstMapper[clientUIDKey])
+	assert.Equal(t, "", firstMapper[clientAccessTokenKey])
+	assert.Equal(t, "", firstMapper[clientRefreshTokenKey])
+	assert.Equal(t, "", firstMapper[clientSaltedKeyPassKey])
+	assert.Equal(t, "old-uid-second", secondMapper[clientUIDKey])
+	assert.Equal(t, "old-access-second", secondMapper[clientAccessTokenKey])
+	assert.Equal(t, "old-refresh-second", secondMapper[clientRefreshTokenKey])
+	assert.Equal(t, "salt-second", secondMapper[clientSaltedKeyPassKey])
 }
