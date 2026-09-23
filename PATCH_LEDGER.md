@@ -331,3 +331,36 @@ are **NOT RUN**. Release readiness is not claimed.
 `8b8d665`. Do not roll dependencies forward to any reviewed PR head until its source, tests,
 version/provenance, and app integration are verified. Never delete or recreate remote objects to
 work around revision failures.
+
+## WP08 successful dry-run state follow-up — 2026-09-23
+
+**Source commit:** `175c3508193eb13be1b5d8c39b8b26475bf4c58c`
+(`bisync: preserve accepted state across dry runs`).
+
+**Finding:** after a successful native `--dry-run`, rclone retains `.lst-dry*` scratch outputs
+while preserving the canonical `.lst` files. The WP08 inspector initially classified those
+non-authoritative scratch outputs as unresolved interrupted state, so merely previewing a
+compatible profile would block its next preflight. Treating these files as recovery listings
+would also be wrong: they are not the accepted baseline and must never authorize recovery.
+
+**Change and safety:** `InspectState` now ignores only `.lst-dry*` artifacts when classifying
+durable state. The active native guard, stale active lock metadata, `.lst-new`, `.lst-err`, unsafe
+files, partial/missing accepted listings, and malformed/divergent listing checks remain
+fail-closed. No dry-run output or accepted listing is deleted. Tests exercise a dry-run initial
+resync (roots remain unchanged and state still reports `ABSENT`) and a compatible-state dry-run
+with same-size/same-mtime/different-byte content (both endpoint bytes and each canonical listing
+remain exact; inspection remains `COMPATIBLE`). The checksum comparison is explicit so that the
+test actually observes the same-metadata content difference.
+
+**Validation:** Windows Go 1.26.8: `go test ./cmd/bisync -count=1` PASS (40.573 s),
+`go vet ./cmd/bisync` PASS, and `GOOS=android GOARCH=arm64 go build -mod=readonly ./cmd/bisync`
+PASS. `gofmt` and `git diff --check` PASS. No dependency changed; no Proton/network data was used.
+
+**Status and remaining work:** this is a native WP08 follow-up only, not WP08 acceptance. The
+source commit is local and has not been published; CloudBridge still pins `d53551e…` until a
+refreshed safe publication and tree/build verification. App preview UI/worker, durable backups,
+restore/recovery, failure/kill injection, integration against the new SHA, Galaxy S26 / One UI
+8.5/9 and Proton disposable-area checks remain open or **NOT RUN**. No APK or release is implied.
+
+**Rollback:** revert only `175c350`; retain the previous read-only inspector and all existing
+Bisync state/listings/backups. Do not prune dry-run or recovery artifacts as a workaround.
