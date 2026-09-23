@@ -11,6 +11,7 @@ Do not infer patch provenance from the old Round Sync handoff or from closed pul
 | WP01 Bisync lock ownership and deletion limits | No upstream patch selected; defect fixed at standalone engine layer | `cb5805f` | Exact reviewed source base `cfb90e3…`; no equivalent combined lock/absolute-delete guard selected | Replace only with a reviewed equivalent preserving cross-process exclusion, fail-closed legacy recovery and absolute deletion bound | Bisync full package/stress tests, Windows/Linux-arm64/Android-arm64 builds — PASS; full evidence below |
 | WP01 Internxt TOTP reauthentication | No dependency patch; backend-local capability preservation | `6833aa5` | Historical `thies2005/rclone` pin `94f543c…` was compared; new bounded behavior preserves clock-skew TOTP without its cooldown globals/retry loop | Remove only after capability review and regression coverage prove equivalent supported reauthentication | Full Internxt tests and 100-repeat TOTP tests — PASS; live account NOT RUN |
 | WP09 per-Fs Proton auth callback ownership | N/A: reproduced backend defect; no dependency PR selected | `8b8d665243e778918184c7e9775d548903e3b95e` | Backend-local; no dependency patch | Replace only after an equivalent reviewed upstream ownership fix and retained two-map regression test | Focused and full Proton package tests, 100-repeat regression, vet — PASS; details below |
+| WP08 native Bisync state inspection and preservation primitives | No upstream issue/PR selected; the safety gap is in native listing/recovery inspection | Local `a2eec9f`; tree-equivalent published commit recorded in the root execution ledger | No reviewed upstream read-only state-inspection API selected | Remove only after an upstream API is reviewed for bounded parsing, lock ownership, non-migrating legacy detection, and equivalent Windows behavior | Full `./cmd/bisync` package, vet, Android/arm64 build, CLI smoke, exact-byte backup/restore fixtures — PASS; app initialization/recovery/device/provider acceptance remains open |
 
 The refreshed Rareities/rclone master identity on 2026-09-23 is
 `1583cce1e28340e5d064ed955179f5f2b31e7757`. Before adding a patch, record the root cause,
@@ -183,3 +184,57 @@ official-client and disposable-vault checks remain prerequisites for claiming Pr
 The archive-derived checkout remains separate rollback evidence and must not be pushed as
 upstream history. No push or PR has yet been made. This standalone evidence is not Android-native,
 live Proton, device, or release acceptance.
+
+## WP08 partial native-state and preservation slice — 2026-09-23
+
+**Finding/evidence:** Native `bilib.BasePath` can rename legacy suffixed listing files, while the
+existing listing loader tolerates malformed rows. Calling either as a preview/probe could mutate
+state or misclassify corrupt/interrupted metadata as a usable baseline. A Windows-specific
+fixture caught a further path bug: `filepath.Join(base, ".path1.lst")` looked for a directory
+named after the base rather than the native `base.path1.lst` file. The regression now asserts
+legacy state is reported unknown and left byte-for-byte in place.
+
+**Failure mode/severity:** Treating missing, partial, malformed, stale-owner, or migrated legacy
+listings as a fresh profile could lead a later resync to overwrite or delete the losing version.
+This is a high-severity data-preservation risk.
+
+**Scope/owner and independent value:** `cmd/bisync` owns native listing format, lock ownership,
+and backup semantics. The new inspector and tests remain useful to rclone CLI users without
+CloudBridge; this is not an Android workaround.
+
+**Action:** Added versioned `InspectState` JSON statuses (`ABSENT`, `COMPATIBLE`, `INTERRUPTED`,
+`INCOMPATIBLE`, `UNKNOWN`), a bounded strict listing parser, native OS guard acquisition,
+lock-metadata checks, legacy-name detection without rename, and old-listing validation without
+restore. Added `--inspect-state`, rejecting explicitly mutating combinations. The docs clarify
+that `ABSENT` applies only to the supplied workdir and provider construction may authenticate or
+make metadata requests. Tests cover active owners, malformed/type-divergent listings, valid
+recovery evidence without mutation, absent workdirs, one/both-empty initialization, file/directory
+conflicts, unusable backup targets, same-size/same-mtime losing bytes, and exact byte restore to a
+separate disposable target.
+
+**Dependency/provenance:** No new Go dependency. Reused the existing `gofrs/flock` dependency and
+native Bisync comparison/listing structures. Local source commit is `a2eec9f`; its parent tree
+matches the published branch tree exactly. The published tree-equivalent commit and pinned app
+revision are to be recorded after the branch update is verified.
+
+**Validation:** On Windows with Go 1.26.8 and `-mod=readonly`, the focused WP08 safety set passed;
+full `go test -json -mod=readonly ./cmd/bisync -count=1` passed (42.013 s);
+`go vet -mod=readonly ./cmd/bisync` passed; `GOOS=android GOARCH=arm64 go build -mod=readonly
+./cmd/bisync` passed. CLI smoke returned the expected bounded `ABSENT` JSON for a unique missing
+workdir and rejected `--inspect-state --resync`. Only disposable local directories and an absent
+config path were used. No Proton credentials/network were used. No device, race-detector, or
+process-kill stress acceptance is implied.
+
+**Status, remaining findings, and order:** This is a partial WP08 native foundation, not WP08
+acceptance. App preview, explicit initialization/recovery UI and coordinator, durable
+run-scoped backup locations, recovery-evidence persistence, backup permission/disk/network fault
+injection, cancellation/kill-boundary tests, migration rollback, full native-integrated Gradle
+build, Galaxy S26/One UI and live Proton verification remain open or NOT RUN. Do not enable the
+legacy Bisync execution path; a missing established profile workdir stays UNKNOWN. Next, publish
+and verify the immutable engine revision, pin CloudBridge to it, and finish app-side preview/init/
+recovery before broad integration or release decisions.
+
+**Rollback:** Revert only local commit `a2eec9f` to remove this inspector/CLI extension. Retain
+the preexisting native lock/deletion protections. The CloudBridge pin stays on its previous
+verified SHA until the new immutable branch commit is fetched and its tree/native artifact are
+verified. Never delete or auto-prune existing listings, backups, profiles, or recovery artifacts.

@@ -98,6 +98,7 @@ Positional arguments:
 Optional Flags:
       --backup-dir1 string                   --backup-dir for Path1. Must be a non-overlapping path on the same remote.
       --backup-dir2 string                   --backup-dir for Path2. Must be a non-overlapping path on the same remote.
+      --inspect-state                        Inspect native listings without syncing, migrating, or recovering them; requires --workdir.
       --check-access                         Ensure expected RCLONE_TEST files are found on both Path1 and Path2 filesystems, else abort.
       --check-filename string                Filename for --check-access (default: RCLONE_TEST)
       --check-sync string                    Controls comparison of final listings: true|false|only (default: true) (default "true")
@@ -128,6 +129,23 @@ Optional Flags:
   -n, --dry-run                              Go through the motions - No files are copied/deleted.
   -v, --verbose                              Increases logging verbosity. May be specified more than once for more details.
 ```
+
+### `--inspect-state`
+
+`--inspect-state` emits one JSON result describing the native listing state in the specified
+`--workdir`. It does not traverse, copy, or modify endpoint contents, and it never migrates
+legacy listing names or invokes recovery. Backend setup may still perform provider
+authentication or metadata requests. A missing work directory is reported as `ABSENT` without
+creating it; this describes only the supplied directory and does not prove that no legacy state
+exists elsewhere. When the directory exists, inspection briefly takes the native Bisync process
+guard (and may leave its empty `.guard` file behind) so it cannot read listings while a native
+run is changing them.
+
+Possible statuses are `ABSENT`, `COMPATIBLE`, `INTERRUPTED`, `INCOMPATIBLE`, and `UNKNOWN`.
+Only `COMPATIBLE` means both current listing files are valid and agree under the selected native
+comparison options. `INTERRUPTED`, `INCOMPATIBLE`, and `UNKNOWN` require explicit investigation;
+the `recoveryListingsValid` field reports only whether retained `-old` listings passed native
+format and consistency checks, not that a recovery is safe to perform automatically.
 
 Arbitrary rclone flags may be specified on the
 [bisync command line](/commands/rclone_bisync/), for example
