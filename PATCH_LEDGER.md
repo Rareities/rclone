@@ -145,21 +145,30 @@ official-client and disposable-vault checks remain prerequisites for claiming Pr
     abort before propagation even with `--force`; invalid TOTP seed or rate-limit/network/server
     error stops without another login request.
 11. **Tests:** Go 1.26.8, `-mod=readonly`. Full `./cmd/bisync` and `./backend/internxt` tests
-    PASS; Bisync lock tests had previously passed at `-count=20`; TOTP cases passed at
+    PASS; Bisync lock tests previously passed at `-count=20`; TOTP cases passed at
     `-count=100`. `./fs/operations`, `./fs/accounting`, `./backend/protondrive`, `./fs/cache`,
-    and `./backend/cache` PASS. Cache tests used a unique `LOCALAPPDATA` under task temp; no
-    existing AppData cache was accessed. `./fs/sync` passes when skipping exactly
-    `TestNothingToTransferWithEmptyDirs` and `TestNothingToTransferWithoutEmptyDirs`; the
-    unfiltered failures were reproduced on pristine exact-upstream `cfb90e3` (Windows directory
-    mtime precision). `go vet ./backend/internxt ./cmd/bisync` PASS. Full `go build
-    -buildvcs=false -mod=readonly ./...` and standalone Windows/amd64, Linux/arm64 and
-    Android/arm64 cross-builds PASS. CLI help displays the new limits and a zero CLI value
-    rejects before filesystem setup. Full `go vet ./...` still reports only the same two
-    findings on pristine baseline and changed branch: unreachable code in iCloud Drive and a
-    copied mutex in Linkbox. Race detector NOT RUN (`CGO_ENABLED=0`; no C compiler). No
-    dependency changes were introduced by local patches; upstream module updates are in the
-    reviewed `cfb90e3` merge. Generated website command/backend docs were not committed per
-    `AGENTS.md`; package RC docs and the hand-maintained Bisync page were updated.
+    and `./backend/cache` PASS. Cache/VFS-backed suites used a unique `LOCALAPPDATA` under task
+    temp; no existing AppData cache was accessed. Upstream review suites PASS for
+    `./backend/archive/...`, `./backend/s3`, `./fs/march`, `./fs/fshttp`, `./lib/rest`,
+    `./cmd/serve/http`, `./cmd/serve/s3`, `./cmd/serve/sftp`, `./fs/rc`, and `./fs/config`.
+    `./fs/config` required the bundled Git `usr/bin/echo.exe` on PATH because these Windows
+    tests invoke a POSIX-style `echo` executable; the corrected run passed. `./cmd/rc` and
+    `./cmd/serve/ftp` have no test files. The first `./cmd/serve/s3` attempt used the protected
+    default AppData cache and failed on access; the full package passed after cache redirection.
+    `./backend/local` passes when skipping exactly `TestSymlinkRangeBeyondEnd` and
+    `TestDirBTimeThroughPlantedSymlinkBlocked`; both unfiltered failures were reproduced on the
+    pristine exact-upstream checkout because this account lacks Windows symlink privilege.
+    `./fs/sync` passes when skipping exactly `TestNothingToTransferWithEmptyDirs` and
+    `TestNothingToTransferWithoutEmptyDirs`; those unfiltered failures were reproduced on
+    pristine `cfb90e3` due Windows directory mtime precision. One initial test invocation named
+    nonexistent `./fs/config/rc`; the corrected `./fs/config` package test passed. Changed-package
+    vet PASS; full `go vet ./...` reports only the same baseline iCloud unreachable-code and
+    Linkbox mutex-copy findings. Full `go build -buildvcs=false -mod=readonly ./...` and
+    Windows/amd64, Linux/arm64 and Android/arm64 builds PASS. CLI help displays the new limits;
+    explicit zero rejects before filesystem setup. Race detector NOT RUN (`CGO_ENABLED=0`; no C
+    compiler). Local patches add no dependency; reviewed upstream `cfb90e3` updates `go.mod`/
+    `go.sum`. Generated website command/backend docs were not committed per `AGENTS.md`; package
+    RC docs and the hand-maintained Bisync page were updated.
 12. **Acceptance status:** standalone implementation/test milestone PASS with explicit
     environment limitations and two independently reproduced upstream sync-test failures.
     GitHub reports the exact upstream tip signature as valid; local patch commits are not
