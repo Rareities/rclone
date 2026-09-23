@@ -238,3 +238,177 @@ recovery before broad integration or release decisions.
 the preexisting native lock/deletion protections. The CloudBridge pin stays on its previous
 verified SHA until the new immutable branch commit is fetched and its tree/native artifact are
 verified. Never delete or auto-prune existing listings, backups, profiles, or recovery artifacts.
+
+## WP08 publication and app-pin verification — 2026-09-23
+
+The WP08 source and ledger were published to `Rareities/rclone` branch `codex/luna-engine` by a
+non-force fast-forward from `ec863fdcd9e1ce0d13357f791d5528aab10bf0ec` to
+`d53551e1722305268c6072263f11066f1278a4a0`. Published tree
+`98c402c28fda112c56b543b3104841435fb8cdf6` exactly matches the locally tested tree (source
+commit `a2eec9f17e9624a8ed78afeccf520c5716270b1f` plus the WP08 documentation ledger commit).
+CloudBridge now pins that immutable commit; profile fixtures were updated to match.
+
+This ref refresh does not imply release provenance: GitHub reports the API-created commit as
+unsigned, no PR-triggered CI run is evidenced, and neither default branch was changed. The app's
+prior full `:rclone:buildAll` integration run fetched this exact SHA and built
+`armeabi-v7a`, `arm64-v8a`, `x86`, and `x86_64`; the later app-only v13 migration verification
+used `-x :rclone:buildAll` because the engine source/pin was unchanged. Native output hashes and
+test details remain in the app execution ledger. No APK or release artifact is implied.
+
+Standalone WP08 acceptance remains partial: full `./cmd/bisync` tests, package vet and
+Android/arm64 cross-build passed; process-kill/race stress, actual Android instrumentation,
+Galaxy S26 / One UI 8.5/9 and live Proton acceptance are **NOT RUN**. Keep existing Bisync
+listings/backups and profiles untouched; the CLI inspector never restores or initializes them.
+
+## WP09 — Proton backend hardening and dependency-candidate audit — 2026-09-23
+
+**Local implementation:** commit `becac91d51f48013df0fdc87da78d7d6ffafa6ed` updates only
+`backend/protondrive/protondrive.go` and its internal tests. Name-hash lookup now falls back to
+decrypted directory names only on a clean hash miss, propagates listing errors, filters file vs
+folder kinds, and treats a matching entry without link metadata as an error. Move and DirMove
+invalidate both source and destination subtrees using each filesystem's own cache/path encoder.
+Reusable-login construction errors no longer erase saved credentials before password fallback;
+definitive SDK deauthentication still clears credentials through the per-Fs callback.
+
+**Local evidence:** `go test -mod=readonly ./backend/protondrive -count=1`,
+`go vet -mod=readonly ./backend/protondrive`, `gofmt -d` for both changed files, and
+`git diff --check` passed on the committed source. `go test -mod=readonly
+./backend/internxt ./backend/drime -count=1` also passed, preserving non-Proton backend coverage.
+Tests use synthetic maps/entries and no Proton credentials or cloud data. Race-detector testing
+is **NOT RUN** (`CGO_ENABLED=0`; no GCC/Clang toolchain is installed).
+
+**Reviewed upstream candidates (refreshed 2026-09-23):**
+
+- rclone/rclone#9851 hash fallback (`868b105143a9b3b1f0fefc41c6d151f17d5b1c2b`) and #9813
+  destination-cache invalidation (`e5328dabf194f5fc4cfc02ab27d1f4d3b5b19b61`) remain open.
+  The backend-local implementation is adapted with stricter malformed-entry behavior and
+  source/destination `Fs` ownership; current Rareities `go.mod` stays unchanged.
+- Proton-API-Bridge#8 (`47d69aac6987f1c91d454b0d61edc8267d6a83e5`) remains open. Its exact
+  isolated checkout passed `go test -mod=readonly ./...` and `go vet -mod=readonly ./...`.
+  Race tests are **NOT RUN** for the toolchain reason above. No CI status checks were attached
+  to the commit in the refreshed GitHub API response; it is not pinned in production.
+- go-proton-api#10 (`9dcca00ba1dc779a8958c9d4988b79ce2f9f3233`) and
+  Proton-API-Bridge#9 (`6f7fc6530d4a77d33d08e36464e018600ae4b93d`) remain open. API10 root tests,
+  the focused refresh-hook tests, and vet passed. Its full `go test ./...` failed in the
+  large `server` test package after 139.986s with Windows socket-bind/connect errors;
+  the previously failing label-test group passed when rerun alone. Bridge9 full tests and vet
+  passed in a temporary `go.work` paired with the API10 checkout. No PR CI status checks were
+  attached to either exact head.
+- A test-only regression added to the isolated API10 checkout proved that its current hook will
+  adopt a *different UID* from a replaced config and can return the other account's user data.
+  A temporary local guard requiring the persisted UID to equal the live client UID (and requiring
+  nonempty UID/access/refresh tokens) made all focused hook tests pass. This audit patch is not in
+  Rareities/rclone or an upstream commit; do not adopt API10 until identity binding is reviewed,
+  upstreamed, and versioned.
+- go-proton-api#5 (`cdb5bd158f14d8b763035b13cf950e34e416ec89`) and
+  Proton-API-Bridge#4 (`b0b05e7b89f9605ccb6af1f4682000f3275fea3f`) provide newer SDK base/move
+  and revision compatibility, but both refreshed PRs report `mergeable: false`. API5's focused
+  v2 route tests and vet passed. Bridge4's focused tests plus vet passed except
+  `TestSetMoveLinkSignatureAddressCompat`, which fails because the helper leaves
+  `SignatureAddress` empty while its test expects it to be populated. No live SDK/Proton move or
+  revision acceptance was run. This stack is not pinned.
+- Bridge#3 (`9ba9207356aef0eb85acb31285bf28feeb4ffd84`) includes deleting a draft link when
+  revision listing fails; rejected because an unavailable list cannot authorize deletion.
+  Bridge#6 (`b75484eb1509c571c10d2c67547d12366638e729`) skips signature verification; rejected.
+  Bridge#7 (`a4a88cd59199faa88a25181ef164d8779499bb03`) removes a 5-second delay without a
+  bounded consistency proof; defer pending read-after-move evidence.
+
+**Dependency/pin decision:** Rareities/rclone remains on Proton-API-Bridge v1.0.5,
+go-proton-api v1.0.4, and gopenpgp/v3 v3.4.1. No production `replace`, unpublished local
+dependency, unmerged PR head, or unverified SDK behavior was introduced. `NewFs` currently
+constructs separate `ProtonDrive` instances; no package-global Fs coalescing lock exists, so no
+global lock/deadlock risk was added. The optional bandwidth/browser-login work remains out of
+this bounded slice.
+
+**Status:** WP09 remains **PARTIAL**. Hash lookup/cache invalidation and transient credential
+preservation are implemented at the rclone backend owner and independently tested. Worker
+cleanup, safe refresh preservation, and current-SDK revision/move interoperability remain gated
+on upstream fixes that pass identity/safety review and become reproducibly pinnable. Live
+Proton, disposable-vault mutations, official-client revision round-trips, and Samsung acceptance
+are **NOT RUN**. Release readiness is not claimed.
+
+**Rollback:** revert only local commit `becac91`; retain per-Fs callback ownership from
+`8b8d665`. Do not roll dependencies forward to any reviewed PR head until its source, tests,
+version/provenance, and app integration are verified. Never delete or recreate remote objects to
+work around revision failures.
+
+## WP08 successful dry-run state follow-up — 2026-09-23
+
+**Source commit:** `175c3508193eb13be1b5d8c39b8b26475bf4c58c`
+(`bisync: preserve accepted state across dry runs`).
+
+**Finding:** after a successful native `--dry-run`, rclone retains `.lst-dry*` scratch outputs
+while preserving the canonical `.lst` files. The WP08 inspector initially classified those
+non-authoritative scratch outputs as unresolved interrupted state, so merely previewing a
+compatible profile would block its next preflight. Treating these files as recovery listings
+would also be wrong: they are not the accepted baseline and must never authorize recovery.
+
+**Change and safety:** `InspectState` now ignores only `.lst-dry*` artifacts when classifying
+durable state. The active native guard, stale active lock metadata, `.lst-new`, `.lst-err`, unsafe
+files, partial/missing accepted listings, and malformed/divergent listing checks remain
+fail-closed. No dry-run output or accepted listing is deleted. Tests exercise a dry-run initial
+resync (roots remain unchanged and state still reports `ABSENT`) and a compatible-state dry-run
+with same-size/same-mtime/different-byte content (both endpoint bytes and each canonical listing
+remain exact; inspection remains `COMPATIBLE`). The checksum comparison is explicit so that the
+test actually observes the same-metadata content difference.
+
+**Validation:** Windows Go 1.26.8: `go test ./cmd/bisync -count=1` PASS (40.573 s),
+`go vet ./cmd/bisync` PASS, and `GOOS=android GOARCH=arm64 go build -mod=readonly ./cmd/bisync`
+PASS. `gofmt` and `git diff --check` PASS. No dependency changed; no Proton/network data was used.
+
+**Status and remaining work:** this is a native WP08 follow-up only, not WP08 acceptance. The
+source commit is local and has not been published; CloudBridge still pins `d53551e…` until a
+refreshed safe publication and tree/build verification. App preview UI/worker, durable backups,
+restore/recovery, failure/kill injection, integration against the new SHA, Galaxy S26 / One UI
+8.5/9 and Proton disposable-area checks remain open or **NOT RUN**. No APK or release is implied.
+
+**Rollback:** revert only `175c350`; retain the previous read-only inspector and all existing
+Bisync state/listings/backups. Do not prune dry-run or recovery artifacts as a workaround.
+
+## WP08 path-free native dry-run summary — 2026-09-23
+
+Source commit: `12ef1fd7e200fd47444c4c7044d23856d80fda04`
+(`bisync: expose path-free dry-run preview summary`).
+
+1. **Objective:** provide CloudBridge a stable, bounded native summary for an explicitly requested
+   Bisync dry-run without parsing human logs or treating the summary as execution authorization.
+2. **Scope:** CLI-only `--preview-json`; versioned result fields for status, planned transfer/byte/
+   file-delete/directory-delete counts, error count and explicit unknown conflict count; stats getter;
+   CLI/RC and Bisync docs.
+3. **Out of scope:** app preview persistence/UI/worker, initialization/recovery, backup/restore,
+   exact conflict enumeration, provider/device acceptance, Proton changes, or release claims.
+4. **Preconditions:** prior native inspector/dry-run state work (`a2eec9f`, `175c350`); no
+   dependency change. CloudBridge continues to pin the previously published immutable engine ref
+   until this source is safely published and integration-tested.
+5. **Design:** require `--dry-run` and reject `--inspect-state` before filesystem construction;
+   emit exactly the versioned JSON summary after a successful Bisync return. Mark native errors or
+   retry/fatal conditions `INCOMPLETE`; never serialize endpoint paths, object names, or error
+   prose. Set `conflictsKnown:false` rather than implying native conflict enumeration.
+6. **Safety invariants:** preview output does not authorize a later mutation and is not a snapshot;
+   failed runs cannot emit a successful summary; inspection remains a distinct read-only operation;
+   no test data or provider state persists after the disposable CLI smoke.
+7. **Implementation:** commit `12ef1fd` adds `cmd/bisync/preview.go` and tests, validates flag
+   combinations before `cmd.NewFsSrcDstFiles`, writes the summary only after `Bisync` succeeds,
+   adds `StatsInfo.GetDeletedDirs`, and documents the CLI-only protocol.
+8. **Reuse:** existing native Bisync dry-run and accounting stats; no replacement for native
+   comparison, deletion guards, or accepted-state inspection.
+9. **Retired:** no prior behavior retired; the summary avoids a future app dependency on parsing
+   path-bearing human output.
+10. **Failure behavior:** invalid flag combinations return an error before backend construction;
+    native execution errors return normally without a JSON success object; a completed dry run
+    with native accounting/retry errors is labeled `INCOMPLETE`.
+11. **Tests:** Windows Go 1.26.8: `go test -mod=readonly ./cmd/bisync ./fs/accounting -count=1`
+    PASS (37.649s and 1.394s); `go vet -mod=readonly ./cmd/bisync ./fs/accounting` PASS;
+    `go build -buildvcs=false -mod=readonly ./...` PASS; `GOOS=android GOARCH=arm64 go build
+    -buildvcs=false -mod=readonly ./cmd/bisync` PASS; `gofmt` and targeted `git diff --check`
+    PASS. A disposable local CLI smoke produced one stdout JSON object with `COMPLETE`, one
+    planned transfer and 26 bytes; without `--dry-run`, the command returned nonzero and rejected
+    the option. Both temporary roots/config/workdir were removed after exact path validation.
+12. **Acceptance:** PARTIAL native preview protocol only. Commit is local, not yet published or
+    pinned by CloudBridge. App-owned fresh preview/known-unknown persistence, cancellation,
+    process-death behavior, backup/restore/fault boundaries and init/recovery remain open.
+    Proton disposable tests and Galaxy S26 / One UI 8.5/9 acceptance remain **NOT RUN**. No APK,
+    signing, PR/CI or release gate is implied.
+13. **Rollback:** revert only `12ef1fd`; retain the previous Bisync command, native inspector,
+    deletion protections and accepted listings. Never prune state or treat dry-run artifacts as
+    a recovery baseline.

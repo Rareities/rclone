@@ -99,6 +99,7 @@ Optional Flags:
       --backup-dir1 string                   --backup-dir for Path1. Must be a non-overlapping path on the same remote.
       --backup-dir2 string                   --backup-dir for Path2. Must be a non-overlapping path on the same remote.
       --inspect-state                        Inspect native listings without syncing, migrating, or recovering them; requires --workdir.
+      --preview-json                         Emit a versioned, path-free summary; requires --dry-run.
       --check-access                         Ensure expected RCLONE_TEST files are found on both Path1 and Path2 filesystems, else abort.
       --check-filename string                Filename for --check-access (default: RCLONE_TEST)
       --check-sync string                    Controls comparison of final listings: true|false|only (default: true) (default "true")
@@ -146,6 +147,15 @@ Only `COMPATIBLE` means both current listing files are valid and agree under the
 comparison options. `INTERRUPTED`, `INCOMPATIBLE`, and `UNKNOWN` require explicit investigation;
 the `recoveryListingsValid` field reports only whether retained `-old` listings passed native
 format and consistency checks, not that a recovery is safe to perform automatically.
+
+### `--preview-json`
+
+`--preview-json` is accepted only with `--dry-run`. After a successful dry run, it writes one
+versioned JSON object to stdout with native transfer, byte, file-delete and directory-delete
+counts. It includes an explicit `conflictsKnown: false` because the native summary does not
+provide a complete conflict count. No endpoint path, object name, or error text is included.
+The result describes the state observed during that run; remote and local contents can change
+immediately afterward. A failed or incomplete run does not emit a successful preview summary.
 
 Arbitrary rclone flags may be specified on the
 [bisync command line](/commands/rclone_bisync/), for example

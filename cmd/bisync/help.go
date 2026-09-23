@@ -41,6 +41,7 @@ func RcHelp() string {
 - path1 (required) - (string) a remote directory string e.g. ||drive:path1||
 - path2 (required) - (string) a remote directory string e.g. ||drive:path2||
 - dryRun - (bool) dry-run mode
+||preview-json|| is a CLI-only stdout format and is not supported by this RC method.
 `+GenerateParams()+`
 See [bisync command help](https://rclone.org/commands/rclone_bisync/)
 and [full bisync description](https://rclone.org/bisync/)
@@ -66,10 +67,14 @@ func toCamel(s string) string {
 func GenerateParams() string {
 	builder := strings.Builder{}
 	fn := func(flag *pflag.Flag) {
-		if flag.Hidden {
+		if flag.Hidden || flag.Name == "preview-json" {
 			return
 		}
-		builder.WriteString(fmt.Sprintf("- %s - (%s) %s  \n", toCamel(flag.Name), flag.Value.Type(), flag.Usage))
+		usage := flag.Usage
+		if flag.Name == "workdir" {
+			usage = strings.ReplaceAll(usage, bisync.DefaultWorkdir, "the platform cache location")
+		}
+		builder.WriteString(fmt.Sprintf("- %s - (%s) %s  \n", toCamel(flag.Name), flag.Value.Type(), usage))
 	}
 	commandDefinition, _, _ := cmd.Root.Find([]string{"bisync"})
 	commandDefinition.Flags().VisitAll(fn)

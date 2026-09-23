@@ -36,6 +36,12 @@ func TestAverageLoopStopsAfterLastCheck(t *testing.T) {
 	assert.Equal(t, int64(1), stats.GetTransfers())
 }
 
+func TestGetDeletedDirs(t *testing.T) {
+	stats := NewStats(context.Background())
+	stats.DeletedDirs(2)
+	assert.Equal(t, int64(2), stats.GetDeletedDirs())
+}
+
 func TestETA(t *testing.T) {
 	for _, test := range []struct {
 		size, total int64
