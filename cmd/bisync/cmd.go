@@ -6,6 +6,7 @@ import (
 	"context"
 	"crypto/md5"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -32,6 +33,7 @@ type TestFunc func()
 // Options keep bisync options
 type Options struct {
 	Resync                bool   // whether or not this is a resync
+	InspectState          bool   // whether to inspect native state without synchronization
 	ResyncMode            Prefer // which mode to use for resync
 	CheckAccess           bool
 	CheckFilename         string
@@ -129,6 +131,7 @@ func init() {
 	// cmd/bisync/rc.go cmd/bisync/help.go (not docs/content/rc.md)
 	// and the Command line syntax section of docs/content/bisync.md (it doesn't update automatically)
 	flags.BoolVarP(cmdFlags, &Opt.Resync, "resync", "1", Opt.Resync, "Performs the resync run. Equivalent to --resync-mode path1. Consider using --verbose or --dry-run first.", "")
+	flags.BoolVarP(cmdFlags, &Opt.InspectState, "inspect-state", "", Opt.InspectState, "Read-only inspection of native Bisync listings; requires --workdir and does not recover or migrate state.", "")
 	flags.FVarP(cmdFlags, &Opt.ResyncMode, "resync-mode", "", "During resync, prefer the version that is: path1, path2, newer, older, larger, smaller (default: path1 if --resync, otherwise none for no resync.)", "")
 	flags.BoolVarP(cmdFlags, &Opt.CheckAccess, "check-access", "", Opt.CheckAccess, MakeHelp("Ensure expected {CHECKFILE} files are found on both Path1 and Path2 filesystems, else abort."), "")
 	flags.StringVarP(cmdFlags, &Opt.CheckFilename, "check-filename", "", Opt.CheckFilename, MakeHelp("Filename for --check-access (default: {CHECKFILE})"), "")
@@ -181,6 +184,15 @@ var commandDefinition = &cobra.Command{
 		ctx := context.Background()
 		opt := Opt
 		opt.applyContext(ctx)
+		if opt.InspectState {
+			for _, name := range []string{"resync", "resync-mode", "force", "check-access", "remove-empty-dirs", "create-empty-src-dirs", "recover", "backup-dir1", "backup-dir2", "filters-file"} {
+				if command.Flags().Changed(name) {
+					return fmt.Errorf("--inspect-state cannot be combined with --%s", name)
+				}
+			}
+			inspection := InspectState(ctx, fs1, fs2, &opt)
+			return json.NewEncoder(command.OutOrStdout()).Encode(inspection)
+		}
 		if command.Flags().Changed("max-delete-count") && opt.MaxDeleteCount <= 0 {
 			return errors.New("--max-delete-count must be a positive integer")
 		}
