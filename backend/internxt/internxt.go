@@ -95,6 +95,12 @@ func init() {
 			Required:   true,
 			IsPassword: true,
 		}, {
+			Name:       "totp_secret",
+			Help:       "TOTP seed for automatic two-factor re-authentication. This is as sensitive as a password.",
+			Sensitive:  true,
+			IsPassword: true,
+			Advanced:   true,
+		}, {
 			Name:      "mnemonic",
 			Help:      "Mnemonic (internal use only)",
 			Required:  false,
@@ -211,6 +217,7 @@ func Config(ctx context.Context, name string, m configmap.Mapper, configIn fs.Co
 type Options struct {
 	Email              string               `config:"email"`
 	Pass               string               `config:"pass"`
+	TOTPSecret         string               `config:"totp_secret"`
 	TwoFA              string               `config:"2fa"`
 	Mnemonic           string               `config:"mnemonic"`
 	SkipHashValidation bool                 `config:"skip_hash_validation"`

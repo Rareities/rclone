@@ -167,7 +167,17 @@ func (f *Fs) reLogin(ctx context.Context) (*internxtauth.AccessResponse, error) 
 	}
 
 	if loginResp.TFA {
-		return nil, errors.New("account requires 2FA - please run: rclone config reconnect " + f.name + ":")
+		secret := revealTOTPSecret(f.opt.TOTPSecret)
+		if secret == "" {
+			return nil, errors.New("account requires 2FA but no totp_secret is configured - please run: rclone config reconnect " + f.name + ":")
+		}
+		resp, err := loginWithTOTPTimeWindows(secret, time.Now(), func(code string) (*internxtauth.AccessResponse, error) {
+			return internxtauth.DoLogin(ctx, cfg, f.opt.Email, password, code)
+		})
+		if err != nil {
+			return nil, fmt.Errorf("re-login with TOTP failed: %w", err)
+		}
+		return resp, nil
 	}
 
 	resp, err := internxtauth.DoLogin(ctx, cfg, f.opt.Email, password, "")
@@ -176,6 +186,34 @@ func (f *Fs) reLogin(ctx context.Context) (*internxtauth.AccessResponse, error) 
 	}
 
 	return resp, nil
+}
+
+// loginWithTOTPTimeWindows tries the current TOTP window and its adjacent
+// windows. Only explicit authentication rejections are eligible for another
+// code; network, rate-limit, server, and other failures return immediately.
+// The bounded three-call cap preserves clock-skew tolerance without creating a
+// general login retry loop.
+func loginWithTOTPTimeWindows(secret string, now time.Time, doLogin func(string) (*internxtauth.AccessResponse, error)) (*internxtauth.AccessResponse, error) {
+	var lastErr error
+	for _, offset := range []int64{0, -1, 1} {
+		code, err := generateTOTPCodeAt(secret, now.Add(time.Duration(offset)*30*time.Second))
+		if err != nil {
+			return nil, fmt.Errorf("failed to generate TOTP code: %w", err)
+		}
+		response, err := doLogin(code)
+		if err == nil {
+			if response == nil {
+				return nil, errors.New("Internxt login returned an empty response")
+			}
+			return response, nil
+		}
+		var httpErr *sdkerrors.HTTPError
+		if !errors.As(err, &httpErr) || (httpErr.StatusCode() != 401 && httpErr.StatusCode() != 403) {
+			return nil, err
+		}
+		lastErr = err
+	}
+	return nil, fmt.Errorf("TOTP authentication was rejected in the current and adjacent time windows: %w", lastErr)
 }
 
 // refreshOrReLogin tries to refresh the JWT token first; if that fails with 401,
