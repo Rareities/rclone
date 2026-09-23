@@ -53,6 +53,83 @@ func TestInspectStateCompatibleAndReadOnlyForListings(t *testing.T) {
 	require.Equal(t, before2, mustRead(t, filepath.Join(workDir, base+".path2.lst")))
 }
 
+func TestDryRunPreservesRootBytesAndCanonicalListings(t *testing.T) {
+	ctx, _ := fs.AddConfig(context.Background())
+	leftRoot, rightRoot := filepath.Join(t.TempDir(), "left"), filepath.Join(t.TempDir(), "right")
+	workDir := t.TempDir()
+	for _, root := range []string{leftRoot, rightRoot} {
+		require.NoError(t, os.MkdirAll(root, 0o700))
+	}
+	leftFile, rightFile := filepath.Join(leftRoot, "same-metadata.txt"), filepath.Join(rightRoot, "same-metadata.txt")
+	require.NoError(t, os.WriteFile(leftFile, []byte("alpha-1234"), 0o600))
+	require.NoError(t, os.WriteFile(rightFile, []byte("bravo-1234"), 0o600))
+	require.NoError(t, os.WriteFile(filepath.Join(leftRoot, "unchanged.txt"), []byte("stable"), 0o600))
+	require.NoError(t, os.WriteFile(filepath.Join(rightRoot, "unchanged.txt"), []byte("stable"), 0o600))
+	sharedTime := time.Date(2024, 2, 3, 4, 5, 6, 0, time.UTC)
+	require.NoError(t, os.Chtimes(leftFile, sharedTime, sharedTime))
+	require.NoError(t, os.Chtimes(rightFile, sharedTime, sharedTime))
+
+	fs1, err := local.NewFs(ctx, "local", leftRoot, configmap.Simple{})
+	require.NoError(t, err)
+	fs2, err := local.NewFs(ctx, "local", rightRoot, configmap.Simple{})
+	require.NoError(t, err)
+	fs1 = stateInspectionTestFs{Fs: fs1, name: "local", root: "left"}
+	fs2 = stateInspectionTestFs{Fs: fs2, name: "local", root: "right"}
+
+	// An initialization preview has no accepted listing to copy. It must leave both roots
+	// untouched and must still inspect as absent after native dry-run scratch files are written.
+	require.NoError(t, Bisync(ctx, fs1, fs2, &Options{
+		Workdir:        workDir,
+		Resync:         true,
+		ResyncMode:     PreferPath1,
+		MaxDeleteCount: DefaultMaxDeleteCount,
+		CompareFlag:    "size,checksum",
+		DryRun:         true,
+	}))
+	require.Equal(t, "alpha-1234", string(mustRead(t, leftFile)))
+	require.Equal(t, "bravo-1234", string(mustRead(t, rightFile)))
+	inspection := InspectState(ctx, fs1, fs2, &Options{Workdir: workDir})
+	require.Equal(t, StateAbsent, inspection.Status,
+		"a successful dry-run initialization must not appear as native initialization or recovery state")
+
+	require.NoError(t, Bisync(ctx, fs1, fs2, &Options{
+		Workdir:        workDir,
+		Resync:         true,
+		ResyncMode:     PreferPath1,
+		MaxDeleteCount: DefaultMaxDeleteCount,
+		CompareFlag:    "size,checksum",
+	}))
+	require.Equal(t, "alpha-1234", string(mustRead(t, leftFile)))
+	require.Equal(t, "alpha-1234", string(mustRead(t, rightFile)))
+
+	// Change the bytes without changing size or modification time. This forces the native
+	// comparison/listing logic to handle a same-size/same-time content change during preview.
+	require.NoError(t, os.WriteFile(leftFile, []byte("bravo-1234"), 0o600))
+	require.NoError(t, os.Chtimes(leftFile, sharedTime, sharedTime))
+	base := bilib.BasePath(ctx, workDir, fs1, fs2)
+	listing1, listing2 := base+".path1.lst", base+".path2.lst"
+	beforeListing1, err := os.ReadFile(listing1)
+	require.NoError(t, err)
+	beforeListing2, err := os.ReadFile(listing2)
+	require.NoError(t, err)
+
+	err = Bisync(ctx, fs1, fs2, &Options{
+		Workdir:        workDir,
+		MaxDeleteCount: DefaultMaxDeleteCount,
+		CompareFlag:    "size,checksum",
+		DryRun:         true,
+	})
+	require.NoError(t, err)
+	require.Equal(t, "bravo-1234", string(mustRead(t, leftFile)), "dry-run must not change Path1")
+	require.Equal(t, "alpha-1234", string(mustRead(t, rightFile)), "dry-run must not change Path2")
+	require.Equal(t, beforeListing1, mustRead(t, listing1), "dry-run must preserve Path1's accepted listing byte-for-byte")
+	require.Equal(t, beforeListing2, mustRead(t, listing2), "dry-run must preserve Path2's accepted listing byte-for-byte")
+
+	inspection = InspectState(ctx, fs1, fs2, &Options{Workdir: workDir})
+	require.Equal(t, StateCompatible, inspection.Status,
+		"preview scratch artifacts must not invalidate the native accepted baseline")
+}
+
 func TestInspectStateRejectsMalformedListingInsteadOfSkippingIt(t *testing.T) {
 	ctx, _ := fs.AddConfig(context.Background())
 	fs1, fs2 := newInspectTestFilesystems(t, ctx)

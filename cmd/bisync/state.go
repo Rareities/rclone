@@ -152,7 +152,11 @@ func InspectState(ctx context.Context, fs1, fs2 fs.Fs, optArg *Options) StateIns
 
 	dirty, dirtyUnsafe := false, false
 	for _, side := range []string{".path1.lst", ".path2.lst"} {
-		for _, suffix := range []string{"-new", "-err", "-dry", "-dry-new", "-dry-old", "-dry-err"} {
+		// Dry-run listings are isolated scratch outputs. They never replace the accepted
+		// listings, so their presence after a successful preview is not an interrupted sync.
+		// If a process is still active, the native guard above reports UNKNOWN; an abnormal
+		// exit leaves active lock metadata and is still reported as interrupted.
+		for _, suffix := range []string{"-new", "-err"} {
 			exists, unsafe := stateFileExists(basePath + side + suffix)
 			dirty = dirty || exists
 			dirtyUnsafe = dirtyUnsafe || unsafe
