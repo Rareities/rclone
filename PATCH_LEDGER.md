@@ -1,24 +1,40 @@
 # Rareities/rclone patch ledger
 
 This ledger is required by the CloudBridge + rclone master handoff. WP00 established the
-source baseline; WP01 found no safe targeted engine source change to add. Do not infer patch
-provenance from the old Round Sync handoff or from closed pull requests.
+source baseline. The earlier WP01 no-change decision below is preserved as history only and
+was superseded after the exact upstream candidate and standalone engine gaps were reviewed.
+Do not infer patch provenance from the old Round Sync handoff or from closed pull requests.
 
 | Purpose | Upstream issue/PR | Rareities commit | Upstream equivalent | Removal condition | Tests |
 |---|---|---|---|---|---|
-| WP01 bounded no-change decision | N/A: no reproducible defect requiring a targeted patch | N/A: `7c16245` is documentation only; engine baseline is Rareities `1583cce…` | None selected; Rareities head `1583cce…` is the exact merge base of upstream candidate `1e925200…` | Replace only after review of an exact immutable candidate and successful standalone/native compatibility gates | `go build -buildvcs=false -mod=readonly ./...`; focused sync/operations and Proton/Internxt tests — PASS |
+| Historical WP01 no-change decision (superseded) | N/A | N/A; based on the earlier `1e925200…` snapshot | Candidate later advanced; see current WP01 record below | Historical only | Do not use as current acceptance evidence |
+| WP01 Bisync lock ownership and deletion limits | No upstream patch selected; defect fixed at standalone engine layer | `cb5805f` | Exact reviewed source base `cfb90e3…`; no equivalent combined lock/absolute-delete guard selected | Replace only with a reviewed equivalent preserving cross-process exclusion, fail-closed legacy recovery and absolute deletion bound | Bisync full package/stress tests, Windows/Linux-arm64/Android-arm64 builds — PASS; full evidence below |
+| WP01 Internxt TOTP reauthentication | No dependency patch; backend-local capability preservation | `6833aa5` | Historical `thies2005/rclone` pin `94f543c…` was compared; new bounded behavior preserves clock-skew TOTP without its cooldown globals/retry loop | Remove only after capability review and regression coverage prove equivalent supported reauthentication | Full Internxt tests and 100-repeat TOTP tests — PASS; live account NOT RUN |
 | WP09 per-Fs Proton auth callback ownership | N/A: reproduced backend defect; no dependency PR selected | `8b8d665243e778918184c7e9775d548903e3b95e` | Backend-local; no dependency patch | Replace only after an equivalent reviewed upstream ownership fix and retained two-map regression test | Focused and full Proton package tests, 100-repeat regression, vet — PASS; details below |
 
-The current Rareities/rclone master identity is `1583cce1e28340e5d064ed955179f5f2b31e7757`.
-Before adding a patch, record the root cause, owning layer, exact local commit, dependency
-provenance, tests, and whether the change remains useful when rclone is used independently.
+The refreshed Rareities/rclone master identity on 2026-09-23 is
+`1583cce1e28340e5d064ed955179f5f2b31e7757`. Before adding a patch, record the root cause,
+owning layer, exact local commit, dependency provenance, tests, and whether the change remains
+useful when rclone is used independently.
 
-As of 2026-09-23, upstream `rclone/rclone` master is
-`1e92520076ccc319fdae29e6fdc6a75bd523b5a2`, 170 commits ahead of this fork according to the
-GitHub comparison, with no fork-only commits reported by that comparison. This is a review
-candidate for a fast-forward, not an instruction to replace source or rewrite remote history.
+The earlier candidate `1e92520076ccc319fdae29e6fdc6a75bd523b5a2` and its 170-commit
+comparison are historical. The reviewed immutable upstream candidate is
+`cfb90e3ebed479119718e3ae44b1171b060079e9`; the refreshed comparison reported 174 upstream
+commits ahead of the Rareities base (240 files; 9,443 insertions and 2,223 deletions). GitHub's
+commit API reports the upstream tip signature as `verified: true`, `reason: valid`; Rareities'
+base commit is reported unsigned. The candidate was merged into the history-preserving local
+branch as merge commit `5987de7861f35d8258a757d875ca4d9615f4cbcd`. The reviewed change categories
+include failed-empty-transfer Bisync accounting (`7e17e1b`), immutable copy/move semantics
+(`dc98c21`, `575633c`), RC authentication and numeric bounds (`939f82d`, `7723091`, `976d05e`),
+confined directory/archive paths and Zip Slip fixes (`935197b`, `842430d`), redirect-header
+credential protections (`399bc6a`, `aef94cd`, `31a8164`), serve startup/cancellation fixes
+(`9b9fd3f`, `f2a390b`, `b82a024`, `caa3418`), Internxt lookup/upload fixes (`77ec281`), and
+security dependency updates (`ef69687`, `f550317`). The merge includes upstream dependency
+updates in `go.mod`/`go.sum`; the local WP01 patches add no new dependency. The refreshed GitHub
+API showed zero open PRs and zero master workflow runs for both Rareities repositories. This is
+local review work, not a push or permission to rewrite the remote branch.
 
-## WP01 decision record
+## Historical WP01 decision record — superseded 2026-09-23
 
 The Rareities source was independently checked with the existing Go 1.26.8 toolchain and
 existing workspace caches. `go build -buildvcs=false -mod=readonly ./...` passed, as did
@@ -26,7 +42,7 @@ existing workspace caches. `go build -buildvcs=false -mod=readonly ./...` passed
 `go test -mod=readonly ./backend/protondrive ./backend/internxt` (the test commands returned
 cached PASS results). No source files changed and no custom patch was introduced.
 
-Because the upstream difference is an unreviewed 170-commit fast-forward, the archive checkout
+At that point, because the upstream difference was an unreviewed 170-commit fast-forward, the archive checkout
 does not contain full upstream history for a reviewable local fast-forward, and no targeted
 defect or fork-only patch was identified, WP01 records a bounded no-change decision. The
 current engine remains independently useful and validated; the upstream candidate is deferred
@@ -92,13 +108,69 @@ bounded recovery path. Implement only after that behavior is reproducibly tested
 independently with Proton library upload-worker/semaphore cancellation and failed-block tests;
 official-client and disposable-vault checks remain prerequisites for claiming Proton acceptance.
 
-## History-preserving workspace branch
+## Current WP01 implementation record — 2026-09-23
 
-The WP01 documentation commits were replayed onto `codex/luna-engine`, descended directly
-from Rareities/rclone `1583cce1e28340e5d064ed955179f5f2b31e7757`. The archive-derived
-checkout remains rollback evidence; do not push its unrelated root. No Go source change, push
-or PR was made by this replay. The CloudBridge pin still names the immutable Rareities head.
-On this history-preserving branch, `go test ./fs/sync ./fs/operations
-./backend/protondrive ./backend/internxt` passed and
-`go build -buildvcs=false -mod=readonly ./...` passed with the workspace Go 1.26.8 toolchain.
-These are independent engine checks, not Android-native or live Proton acceptance.
+### Package record (13-field format)
+
+1. **Objective:** refresh and independently validate Rareities/rclone, preserving useful
+   standalone behavior and closing reproduced engine safety/capability gaps.
+2. **Scope:** reviewed upstream `cfb90e3…` merge; Bisync process-lock ownership and aggregate
+   deletion guard; Internxt TOTP reauthentication; source/help documentation and regression tests.
+3. **Out of scope:** app integration beyond updating its immutable pin after this gate; live
+   Proton/Internxt account acceptance; S26/device testing; unrelated backend rewrites.
+4. **Preconditions:** WP00 archive identities and exact GitHub refs refreshed; Go 1.26.8
+   available; local `codex/luna-engine` descends from the Rareities history, not the archive root.
+5. **Design:** merge the exact reviewed upstream commit without moving remote refs. Bisync uses
+   a persistent companion OS lock and owner-token metadata; heartbeat age never grants takeover.
+   Add a positive aggregate deletion ceiling of 25 by default, retaining the per-path percentage
+   check at 10%; `--force` bypasses only the percentage check. Preserve Internxt TOTP capability
+   with current/adjacent 30-second windows and retry only explicit 401/403 rejections.
+6. **Safety invariants:** no lock file/guard unlink race; OS ownership is authoritative; unreadable,
+   legacy or unsupported metadata fails closed; stale heartbeat cannot steal a live lock; guard
+   is checked after complete listings and before mutation; zero/negative explicit limits reject;
+   secrets/codes are not logged; no generic auth retry or cooldown loop.
+7. **Implementation:** merge commit `5987de7`; Bisync commit `cb5805f`; Internxt commit `6833aa5`.
+   Lock metadata v2 is atomically published/replaced while `.lck.guard` remains persistent.
+   Dry-run keeps prior no-lock/no-artifact semantics. RC and CLI expose validated
+   `maxDeleteCount`/`--max-delete-count`; user documentation describes recovery and version
+   transition behavior. Internxt `totp_secret` is Sensitive/IsPassword and supports obscured
+   values plus legacy Base32 plaintext.
+8. **Existing code reused:** `gofrs/flock` already in `go.mod`; rclone config obscuring,
+   SDK `HTTPError` status classification, existing delta accounting and Bisync test harness.
+9. **Code retired:** time-based lock expiry as authority; direct removal/recreation of `.lck`;
+   the prior 50% default; no supported Internxt automatic TOTP refresh when switching away from
+   the historical custom engine.
+10. **Failure behaviour:** active lock conflict returns before sync; stale/legacy metadata is
+    not auto-deleted; failed owner verification/release is reported; excessive observed deletes
+    abort before propagation even with `--force`; invalid TOTP seed or rate-limit/network/server
+    error stops without another login request.
+11. **Tests:** Go 1.26.8, `-mod=readonly`. Full `./cmd/bisync` and `./backend/internxt` tests
+    PASS; Bisync lock tests had previously passed at `-count=20`; TOTP cases passed at
+    `-count=100`. `./fs/operations`, `./fs/accounting`, `./backend/protondrive`, `./fs/cache`,
+    and `./backend/cache` PASS. Cache tests used a unique `LOCALAPPDATA` under task temp; no
+    existing AppData cache was accessed. `./fs/sync` passes when skipping exactly
+    `TestNothingToTransferWithEmptyDirs` and `TestNothingToTransferWithoutEmptyDirs`; the
+    unfiltered failures were reproduced on pristine exact-upstream `cfb90e3` (Windows directory
+    mtime precision). `go vet ./backend/internxt ./cmd/bisync` PASS. Full `go build
+    -buildvcs=false -mod=readonly ./...` and standalone Windows/amd64, Linux/arm64 and
+    Android/arm64 cross-builds PASS. CLI help displays the new limits and a zero CLI value
+    rejects before filesystem setup. Full `go vet ./...` still reports only the same two
+    findings on pristine baseline and changed branch: unreachable code in iCloud Drive and a
+    copied mutex in Linkbox. Race detector NOT RUN (`CGO_ENABLED=0`; no C compiler). No
+    dependency changes were introduced by local patches; upstream module updates are in the
+    reviewed `cfb90e3` merge. Generated website command/backend docs were not committed per
+    `AGENTS.md`; package RC docs and the hand-maintained Bisync page were updated.
+12. **Acceptance status:** standalone implementation/test milestone PASS with explicit
+    environment limitations and two independently reproduced upstream sync-test failures.
+    GitHub reports the exact upstream tip signature as valid; local patch commits are not
+    signed. No CI runs are evidenced. Live Proton and Samsung Galaxy S26 / One UI 8.5/9 acceptance remain
+    NOT RUN. CloudBridge still requires its post-WP01 immutable pin update and native APK
+    inspection before WP07 integration proceeds.
+13. **Rollback point:** revert only `cb5805f` and/or `6833aa5` as bounded local patch commits;
+    retain upstream merge `5987de7` and WP09 `8b8d665` unless separately re-reviewed. Keep the
+    app on prior pin `1583cce…` until it is deliberately updated to a verified final WP01
+    commit; do not delete existing Bisync profiles or metadata.
+
+The archive-derived checkout remains separate rollback evidence and must not be pushed as
+upstream history. No push or PR has yet been made. This standalone evidence is not Android-native,
+live Proton, device, or release acceptance.
