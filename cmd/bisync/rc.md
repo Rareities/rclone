@@ -5,6 +5,8 @@ This takes the following parameters:
 - path1 (required) - (string) a remote directory string e.g. `drive:path1`
 - path2 (required) - (string) a remote directory string e.g. `drive:path2`
 - dryRun - (bool) dry-run mode
+`preview-json` is a CLI-only stdout format and is not supported by this RC
+method.
 - backupDir1 - (string) --backup-dir for Path1. Must be a non-overlapping path on
 the same remote.  
 - backupDir2 - (string) --backup-dir for Path2. Must be a non-overlapping path on
@@ -31,14 +33,16 @@ suffixes to Path1/Path2. (default: 'conflict')
 unavailable. (warning: may be slow and use lots of data!)  
 - filtersFile - (string) Read filtering patterns from a file  
 - force - (bool) Bypass the --max-delete percentage check (not the absolute --max-
-delete-count guard). Consider using with --verbose
+delete-count guard). Consider using with --verbose  
 - ignoreListingChecksum - (bool) Do not use checksums for listings (add --ignore-
 checksum to additionally skip post-copy checksum checks)  
+- inspectState - (bool) Read-only inspection of native Bisync listings;
+requires --workdir and does not recover or migrate state.  
 - maxDeleteCount - (int64) Maximum aggregate number of observed deletions
-across both paths (must be positive; cannot be bypassed with --force)
+across both paths (must be positive; cannot be bypassed with --force)  
 - maxLock - (Duration) Diagnostic lock-heartbeat interval (minimum: 2m); OS
 ownership is authoritative and a stale heartbeat never permits takeover
-(default: 0, no heartbeat)
+(default: 0, no heartbeat)  
 - noCleanup - (bool) Retain working files (useful for troubleshooting and
 testing).  
 - noSlowHash - (bool) Ignore listing checksums only on backends where they are
@@ -56,8 +60,8 @@ path2, newer, older, larger, smaller (default: path1 if --resync, otherwise
 none for no resync.)  
 - slowHashSyncOnly - (bool) Ignore slow checksums for listings and deltas, but
 still consider them during sync calls.  
-- workdir - (string) Use custom working dir - useful for testing. (default:
-$HOME/.cache/rclone/bisync)
+- workdir - (string) Use custom working dir - useful for testing. (default: the
+platform cache location)  
 
 See [bisync command help](https://rclone.org/commands/rclone_bisync/)
 and [full bisync description](https://rclone.org/bisync/)

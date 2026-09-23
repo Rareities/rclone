@@ -18,6 +18,7 @@ import (
 	"github.com/rclone/rclone/cmd"
 	"github.com/rclone/rclone/cmd/bisync/bilib"
 	"github.com/rclone/rclone/fs"
+	"github.com/rclone/rclone/fs/accounting"
 	"github.com/rclone/rclone/fs/config"
 	"github.com/rclone/rclone/fs/config/flags"
 	"github.com/rclone/rclone/fs/filter"
@@ -34,6 +35,7 @@ type TestFunc func()
 type Options struct {
 	Resync                bool   // whether or not this is a resync
 	InspectState          bool   // whether to inspect native state without synchronization
+	PreviewJSON           bool   // whether to write a path-free JSON summary of a dry run
 	ResyncMode            Prefer // which mode to use for resync
 	CheckAccess           bool
 	CheckFilename         string
@@ -127,11 +129,12 @@ func init() {
 	Opt.MaxDeleteCount = DefaultMaxDeleteCount
 	cmd.Root.AddCommand(commandDefinition)
 	cmdFlags := commandDefinition.Flags()
-	// when adding new flags, remember to also update the rc params:
-	// cmd/bisync/rc.go cmd/bisync/help.go (not docs/content/rc.md)
-	// and the Command line syntax section of docs/content/bisync.md (it doesn't update automatically)
+	// RC parameters are maintained in rc.go; CLI-only output options are excluded from RC help.
+	// Keep cmd/bisync/help.go and generated cmd/bisync/rc.md consistent with that distinction.
+	// Update the hand-maintained command-line syntax in docs/content/bisync.md separately.
 	flags.BoolVarP(cmdFlags, &Opt.Resync, "resync", "1", Opt.Resync, "Performs the resync run. Equivalent to --resync-mode path1. Consider using --verbose or --dry-run first.", "")
 	flags.BoolVarP(cmdFlags, &Opt.InspectState, "inspect-state", "", Opt.InspectState, "Read-only inspection of native Bisync listings; requires --workdir and does not recover or migrate state.", "")
+	flags.BoolVarP(cmdFlags, &Opt.PreviewJSON, "preview-json", "", Opt.PreviewJSON, "Write a versioned, path-free JSON summary; requires --dry-run.", "")
 	flags.FVarP(cmdFlags, &Opt.ResyncMode, "resync-mode", "", "During resync, prefer the version that is: path1, path2, newer, older, larger, smaller (default: path1 if --resync, otherwise none for no resync.)", "")
 	flags.BoolVarP(cmdFlags, &Opt.CheckAccess, "check-access", "", Opt.CheckAccess, MakeHelp("Ensure expected {CHECKFILE} files are found on both Path1 and Path2 filesystems, else abort."), "")
 	flags.StringVarP(cmdFlags, &Opt.CheckFilename, "check-filename", "", Opt.CheckFilename, MakeHelp("Filename for --check-access (default: {CHECKFILE})"), "")
@@ -176,16 +179,19 @@ var commandDefinition = &cobra.Command{
 		// NOTE: avoid putting too much handling here, as it won't apply to the rc.
 		// Generally it's best to put init-type stuff in Bisync() (operations.go)
 		cmd.CheckArgs(2, 2, command, args)
+		ctx := context.Background()
+		opt := Opt
+		opt.applyContext(ctx)
+		if err := validatePreviewJSON(opt.PreviewJSON, opt.DryRun, opt.InspectState); err != nil {
+			return err
+		}
 		fs1, file1, fs2, file2 := cmd.NewFsSrcDstFiles(args)
 		if file1 != "" || file2 != "" {
 			return errors.New("paths must be existing directories")
 		}
 
-		ctx := context.Background()
-		opt := Opt
-		opt.applyContext(ctx)
 		if opt.InspectState {
-			for _, name := range []string{"resync", "resync-mode", "force", "check-access", "remove-empty-dirs", "create-empty-src-dirs", "recover", "backup-dir1", "backup-dir2", "filters-file"} {
+			for _, name := range []string{"resync", "resync-mode", "force", "check-access", "remove-empty-dirs", "create-empty-src-dirs", "recover", "backup-dir1", "backup-dir2", "filters-file", "preview-json"} {
 				if command.Flags().Changed(name) {
 					return fmt.Errorf("--inspect-state cannot be combined with --%s", name)
 				}
@@ -215,7 +221,13 @@ var commandDefinition = &cobra.Command{
 			if err == ErrBisyncAborted {
 				return fserrors.FatalError(err)
 			}
-			return err
+			if err != nil {
+				return err
+			}
+			if opt.PreviewJSON {
+				return writePreviewJSON(command.OutOrStdout(), accounting.GlobalStats())
+			}
+			return nil
 		})
 		return nil
 	},
