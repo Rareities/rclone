@@ -412,3 +412,46 @@ Source commit: `12ef1fd7e200fd47444c4c7044d23856d80fda04`
 13. **Rollback:** revert only `12ef1fd`; retain the previous Bisync command, native inspector,
     deletion protections and accepted listings. Never prune state or treat dry-run artifacts as
     a recovery baseline.
+
+## WP08 downstream CloudBridge pin and four-ABI integration — 2026-09-24
+
+This follow-up supersedes the earlier note that CloudBridge had not pinned the native summary
+protocol; it does not complete the rclone or app work package.
+
+1. **Objective:** verify the published path-free native preview protocol is consumable by the
+   Rareities/CloudBridge Android build at an immutable revision.
+2. **Scope:** downstream pin at the app repository, native ABI compilation and debug APK
+   packaging; rclone production source is unchanged by this entry.
+3. **Out of scope:** app preview worker/UI/persistence, safe initialization/recovery, live Proton,
+   device acceptance, release signing, or GitHub PR/CI completion.
+4. **Preconditions:** Rareities/rclone `codex/luna-engine` remote SHA
+   `fe775a8b58cf217fdf4bd34f0975af1e4c19c1a0`, tree
+   `68df728c1eb3cd1e60340286cd99548e6d0d0452`; independent Go validation for WP08 preview is
+   recorded above.
+5. **Design:** consume `https://github.com/Rareities/rclone.git` by full commit SHA, with no
+   floating branch or upstream fallback.
+6. **Safety invariants:** the app build fetched the exact source SHA and version; generated native
+   objects remain build outputs; debug signature is not a release signature; no remote user data
+   was touched.
+7. **Implementation:** CloudBridge commit `eb71b94fb563d75ce02c161530fe9ec594038642` updates
+   its ref/identity fixtures and Go executable resolution. `:rclone:buildAll` freshly compiled
+   all four ABIs; OSS debug assembly packaged all four libraries.
+8. **Reuse:** rclone `--dry-run --preview-json`, prior native state inspector and existing
+   Gradle `rCloneRepoUrl`/`rCloneRef` integration.
+9. **Retired:** downstream pin `d53551e…` is superseded by `fe775a8…`. The older `d53551e…`
+   commit remains in ancestry and may be restored only with an explicit rollback.
+10. **Failure behavior:** missing engine source/ref continues to fail Gradle configuration; no
+    app summary is considered known until its future parser validates the exact protocol.
+11. **Tests:** fresh Windows Go 1.26.8 `:rclone:buildAll` PASS (arm64-v8a, armeabi-v7a, x86,
+    x86_64). CloudBridge JDK 17.0.20.1 / Gradle 8.13 unit tests PASS (14 suites, 76 tests,
+    0 failures/errors, one symlink skip), lint PASS with baseline, instrumentation-source compile
+    PASS, `assembleOssDebug` PASS. Universal APK SHA-256
+    `71F6EA499419D1928E50BD2F211126E1E4BD6952B3B5552E981FF095626614CE`, verified debug signer
+    SHA-256 `2dfd7565c808a6144fd1c7458b5dfe5fc04b31319f23055c8e4d0d80096273bb`. The rclone
+    commit is unsigned; no source-signature claim is made.
+12. **Acceptance:** downstream engine pin and four-ABI debug integration PASS; app-level preview
+    work, native initialization/recovery, backups/fault tests, R8/release, PR/CI, actual Android
+    instrumentation, Galaxy S26 and live Proton tests are open or **NOT RUN**. No release
+    readiness is claimed.
+13. **Rollback:** revert the app pin and its engine-identity fixtures together to the previous
+    immutable `d53551e…`; retain native state/listings/backups and do not downgrade user state.
