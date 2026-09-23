@@ -52,7 +52,7 @@ INFO  : - [36mPath1[0m    [35m[31mFile was deleted[0m[0m          - [36mf
 INFO  : - [36mPath1[0m    [35m[31mFile was deleted[0m[0m          - [36mfile5.txt[0m
 INFO  : Path1:    5 changes: [32m   0 new[0m, [33m   0 modified[0m, [31m   5 deleted[0m
 INFO  : Path2 checking for diffs
-ERROR : Safety abort: too many deletes (>50%, 5 of 9) on Path1 "{path1/}". Run with --force if desired.
+ERROR : Safety abort: too many deletes (>10%, 5 of 9) on Path1 "{path1/}". Run with --force if desired.
 NOTICE: [31mBisync aborted. Please try again.[0m
 Bisync error: too many deletes
 [36m(12)  :[0m [34mcopy-listings initial-fail[0m

@@ -30,12 +30,15 @@ suffixes to Path1/Path2. (default: 'conflict')
 - downloadHash - (bool) Compute hash by downloading when otherwise
 unavailable. (warning: may be slow and use lots of data!)  
 - filtersFile - (string) Read filtering patterns from a file  
-- force - (bool) Bypass --max-delete safety check and run the sync. Consider
-using with --verbose  
+- force - (bool) Bypass the --max-delete percentage check (not the absolute --max-
+delete-count guard). Consider using with --verbose
 - ignoreListingChecksum - (bool) Do not use checksums for listings (add --ignore-
 checksum to additionally skip post-copy checksum checks)  
-- maxLock - (Duration) Consider lock files older than this to be expired
-(default: 0 (never expire)) (minimum: 2m)  
+- maxDeleteCount - (int64) Maximum aggregate number of observed deletions
+across both paths (must be positive; cannot be bypassed with --force)
+- maxLock - (Duration) Diagnostic lock-heartbeat interval (minimum: 2m); OS
+ownership is authoritative and a stale heartbeat never permits takeover
+(default: 0, no heartbeat)
 - noCleanup - (bool) Retain working files (useful for troubleshooting and
 testing).  
 - noSlowHash - (bool) Ignore listing checksums only on backends where they are
@@ -54,7 +57,7 @@ none for no resync.)
 - slowHashSyncOnly - (bool) Ignore slow checksums for listings and deltas, but
 still consider them during sync calls.  
 - workdir - (string) Use custom working dir - useful for testing. (default:
-/home/ncw/.cache/rclone/bisync)  
+$HOME/.cache/rclone/bisync)
 
 See [bisync command help](https://rclone.org/commands/rclone_bisync/)
 and [full bisync description](https://rclone.org/bisync/)

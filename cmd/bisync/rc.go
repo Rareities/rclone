@@ -62,7 +62,10 @@ func MakeHelp(help string) string {
 }
 
 func rcBisync(ctx context.Context, in rc.Params) (out rc.Params, err error) {
-	opt := &Options{}
+	opt := &Options{
+		MaxDelete:      DefaultMaxDelete,
+		MaxDeleteCount: DefaultMaxDeleteCount,
+	}
 	octx, ci := fs.AddConfig(ctx)
 
 	if dryRun, err := in.GetBool("dryRun"); err == nil {
@@ -77,6 +80,14 @@ func rcBisync(ctx context.Context, in rc.Params) (out rc.Params, err error) {
 			return nil, rc.NewErrParamInvalid(errors.New("maxDelete must be a percentage between 0 and 100"))
 		}
 		opt.MaxDelete = int(maxDelete)
+	} else if rc.NotErrParamNotFound(err) {
+		return nil, err
+	}
+	if maxDeleteCount, err := in.GetInt64("maxDeleteCount"); err == nil {
+		if maxDeleteCount <= 0 {
+			return nil, rc.NewErrParamInvalid(errors.New("maxDeleteCount must be a positive integer"))
+		}
+		opt.MaxDeleteCount = maxDeleteCount
 	} else if rc.NotErrParamNotFound(err) {
 		return nil, err
 	}
