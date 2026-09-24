@@ -455,3 +455,44 @@ protocol; it does not complete the rclone or app work package.
     readiness is claimed.
 13. **Rollback:** revert the app pin and its engine-identity fixtures together to the previous
     immutable `d53551e…`; retain native state/listings/backups and do not downgrade user state.
+
+## WP08 local Bisync backup-root reuse regression on active engine worktree (PARTIAL)
+
+1. **Objective:** establish whether reusing a native Bisync backup root can overwrite an older
+   preserved version at the same relative path, motivating a fresh run-scoped root invariant.
+2. **Scope:** test-only change in `cmd/bisync/backup_safety_test.go`, active local
+   `codex/luna-engine` worktree; source/test commit `67a7b94`. No production behavior changed.
+3. **Out of scope:** native partial-backup failure semantics, remote/provider behavior, app
+   manifest or restore flow, engine pin changes, PR/CI, APK, signing, or release acceptance.
+4. **Preconditions/provenance:** local pre-change HEAD was `4fd2ba3d5df2650dd49177f0690dc80f767c0b9b`.
+   GitHub confirms the public `codex/luna-engine` ref is exactly `fe775a8b58cf217fdf4bd34f0975af1e4c19c1a0`,
+   the CloudBridge pin, but GitHub cannot resolve the local `4fd2ba3…` commit; ancestry between
+   this local worktree and the published source is therefore unverified. Do not publish this
+   worktree or attribute this test to the public pin without reconciling history.
+5. **Design:** for both Path1 and Path2, create disposable local endpoint/backup/work roots,
+   establish an accepted baseline, pre-populate the selected backup root with older bytes, change
+   the opposite endpoint using a same-length version, run native Bisync with both backup flags,
+   then assert endpoint convergence, unchanged sentinels, and replacement of the older backup.
+6. **Safety invariants:** all test paths are beneath `t.TempDir`; no real provider, user data,
+   CloudBridge `.android/`, accepted profile, or non-disposable backup is accessed. Existing
+   generated command docs remain unstaged and untouched.
+7. **Implementation:** commit `67a7b94` adds one table-driven test covering both backup roots;
+   no dependency or production file changed.
+8. **Existing code reused:** Bisync native backup flags, local backend, `stateInspectionTestFs`,
+   existing `mustRead` helper, and the package's local disposable test conventions.
+9. **Code retired/decision:** no code retired. Treat native backup-root reuse as unsafe for an
+   app retry or uncertain run; each mutation attempt needs fresh unique backup locations.
+10. **Failure behavior:** this test demonstrates replacement on a successful reuse; it does not
+    establish behavior when backup transfer partially writes and then fails. App mutation remains
+    unavailable until its durable run-owned preservation and restore contract is proven.
+11. **Tests:** `git diff --cached --check` passed before commit; the independent static review
+    found no obvious API/compile mismatch. `go test`, compilation, gofmt, and runtime execution
+    are **NOT RUN** because no Go toolchain is on PATH in this checkout. No CI evidence exists.
+12. **Acceptance status:** regression source committed locally; this test is not verified by
+    execution, WP08 remains **PARTIAL**, and no claim is made for the published pin or package
+    acceptance. Public branch comparison is 180 commits ahead of `master`; no open rclone PR,
+    workflow runs, or status checks were returned for the pinned commit.
+13. **Rollback/next:** revert only `67a7b94` if test review or execution finds a defect; do not
+    alter the published ref or the unrelated generated docs. Next, run this test in Go-enabled CI
+    and add an injected partial-backup-write failure test for both sides before considering the
+    broader WP08 preservation gate.
