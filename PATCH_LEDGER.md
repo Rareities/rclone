@@ -466,9 +466,10 @@ protocol; it does not complete the rclone or app work package.
    manifest or restore flow, engine pin changes, PR/CI, APK, signing, or release acceptance.
 4. **Preconditions/provenance:** local pre-change HEAD was `4fd2ba3d5df2650dd49177f0690dc80f767c0b9b`.
    GitHub confirms the public `codex/luna-engine` ref is exactly `fe775a8b58cf217fdf4bd34f0975af1e4c19c1a0`,
-   the CloudBridge pin, but GitHub cannot resolve the local `4fd2ba3…` commit; ancestry between
-   this local worktree and the published source is therefore unverified. Do not publish this
-   worktree or attribute this test to the public pin without reconciling history.
+   the CloudBridge pin. Fetched blob IDs for selected Bisync state/operations files, ProtonDrive
+   source, and `go.mod` match local `4fd2ba3…`, but GitHub cannot resolve that local commit and
+   full tree/ancestry equality remains unverified. Do not publish this worktree or attribute this
+   test to the public pin without reconciling history.
 5. **Design:** for both Path1 and Path2, create disposable local endpoint/backup/work roots,
    establish an accepted baseline, pre-populate the selected backup root with older bytes, change
    the opposite endpoint using a same-length version, run native Bisync with both backup flags,
@@ -477,7 +478,8 @@ protocol; it does not complete the rclone or app work package.
    CloudBridge `.android/`, accepted profile, or non-disposable backup is accessed. Existing
    generated command docs remain unstaged and untouched.
 7. **Implementation:** commit `67a7b94` adds one table-driven test covering both backup roots;
-   no dependency or production file changed.
+   follow-up `4d245f1` adds the repository-standard Go copyright header. No dependency or
+   production file changed.
 8. **Existing code reused:** Bisync native backup flags, local backend, `stateInspectionTestFs`,
    existing `mustRead` helper, and the package's local disposable test conventions.
 9. **Code retired/decision:** no code retired. Treat native backup-root reuse as unsafe for an
@@ -492,7 +494,7 @@ protocol; it does not complete the rclone or app work package.
     execution, WP08 remains **PARTIAL**, and no claim is made for the published pin or package
     acceptance. Public branch comparison is 180 commits ahead of `master`; no open rclone PR,
     workflow runs, or status checks were returned for the pinned commit.
-13. **Rollback/next:** revert only `67a7b94` if test review or execution finds a defect; do not
-    alter the published ref or the unrelated generated docs. Next, run this test in Go-enabled CI
-    and add an injected partial-backup-write failure test for both sides before considering the
-    broader WP08 preservation gate.
+13. **Rollback/next:** if review or execution finds a defect, revert `4d245f1` and then
+    `67a7b94`; do not alter the published ref or unrelated generated docs. Next, run this test in
+    Go-enabled CI and add an injected partial-backup-write failure test for both sides before
+    considering the broader WP08 preservation gate.
