@@ -498,3 +498,47 @@ protocol; it does not complete the rclone or app work package.
     `67a7b94`; do not alter the published ref or unrelated generated docs. Next, run this test in
     Go-enabled CI and add an injected partial-backup-write failure test for both sides before
     considering the broader WP08 preservation gate.
+
+## 2026-09-25 - WP08 backup-root reuse regression execution revalidation (PARTIAL)
+
+1. **Objective:** execute the previously source-only native backup-root reuse regression and
+   revalidate its owning Bisync/ProtonDrive packages with the available pinned Go toolchain.
+2. **Scope:** no source changes; validated active `codex/luna-engine` checkout at
+   `894298219d4f3798b5507fee5f457464bab6547c`, including test source commit `67a7b943818d38a97b3aced02a3a7c962f719292`.
+3. **Out of scope:** publishing the branch, changing CloudBridge's pin, introducing production
+   backup behavior, provider/Proton interoperability, app restore flow, PR, APK, signing, or
+   release.
+4. **Preconditions:** Go 1.26.8 Windows/amd64 from the task-local toolchain; read-only module
+   mode; `GOPROXY=off`; isolated absent config; all test-created endpoints and backup roots are
+   disposable local paths.
+5. **Design:** run the Path1/Path2 backup-root replacement regression repeatedly, then the
+   complete affected package suites, static checks, full repository build, and Android/arm64
+   Bisync cross-build.
+6. **Safety invariants:** test data is confined to `t.TempDir()` under a short task-owned mapped
+   temp root; no user/provider data, credentials, app `.android/`, or generated command docs were
+   changed. The 79 pre-existing generated command-doc modifications remain unstaged and untouched.
+7. **Implementation:** no files changed. Toolchain/cache/temp configuration was scoped to the
+   task workspace. The short mapped temp drive was removed after the suite completed.
+8. **Reuse:** existing `TestBisyncBackupDirReuseReplacesExistingPreservedPath`, native Bisync
+   local backend, existing test fixtures, and the repository's existing module cache.
+9. **Retired/decision:** the earlier `NOT RUN` result remains correct for that prior environment
+   but is superseded by this execution record. No source or upstream behavior was changed.
+10. **Failure behavior:** the first broad suite attempt with the long workspace temp path failed
+    on Windows generated-session-name/path limits in existing tests. Re-running with the short
+    disposable temp path passed; no test was suppressed or altered.
+11. **Tests:** focused backup-root reuse test passed 20/20; `go test -mod=readonly -count=1
+    ./cmd/bisync ./backend/protondrive` passed (`cmd/bisync` 27.343s, ProtonDrive 0.541s);
+    `go vet -mod=readonly ./cmd/bisync ./backend/protondrive`, `go build -buildvcs=false
+    -mod=readonly ./...`, `GOOS=android GOARCH=arm64 CGO_ENABLED=0 go build
+    -buildvcs=false -mod=readonly ./cmd/bisync`, `gofmt -d cmd/bisync/backup_safety_test.go`,
+    and targeted `git diff --check` passed. Go module downloads were disabled. Race detector,
+    full live Proton interoperability, Samsung device, and Linux/Android runtime tests are
+    **NOT RUN**.
+12. **Acceptance:** the regression and affected native packages are independently verified on
+    this local checkout. This is not evidence for the CloudBridge-pinned `fe775a8…` revision or
+    the separate `codex/luna-preview-isolation` checkout; WP08 remains **PARTIAL**, and no
+    native follow-up is published or app-integrated.
+13. **Rollback/next:** no code rollback applies. Reconcile candidate changes against a clean
+    Rareities/rclone base and review them before any PR/pin promotion; continue WP08 endpoint
+    placement/manifest/restore proof. Keep app mutation, live-provider claims, and release gates
+    closed.
