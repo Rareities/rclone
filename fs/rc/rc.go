@@ -44,6 +44,11 @@ var OptionsInfo = fs.Options{{
 	Help:    "Don't require auth for certain methods",
 	Groups:  "RC",
 }, {
+	Name:    "rc_deny_commands",
+	Default: []string{},
+	Help:    "Exact remote control command to deny; may be repeated (e.g. sync/bisync). Any non-empty deny list also disables core/command",
+	Groups:  "RC",
+}, {
 	Name:    "rc_web_gui",
 	Default: false,
 	Help:    "Launch WebGUI on localhost **DEPRECATED**",
@@ -104,14 +109,17 @@ func init() {
 
 // Options contains options for the remote control server
 type Options struct {
-	HTTP                libhttp.Config         `config:"rc"`
-	Auth                libhttp.AuthConfig     `config:"rc"`
-	Template            libhttp.TemplateConfig `config:"rc"`
-	Enabled             bool                   `config:"rc"`                         // set to enable the server
-	Files               string                 `config:"rc_files"`                   // set to enable serving files locally
-	Serve               bool                   `config:"rc_serve"`                   // set to serve files from remotes
-	ServeNoModTime      bool                   `config:"rc_serve_no_modtime"`        // don't read the modification time
-	NoAuth              bool                   `config:"rc_no_auth"`                 // set to disable auth checks on methods which require it
+	HTTP           libhttp.Config         `config:"rc"`
+	Auth           libhttp.AuthConfig     `config:"rc"`
+	Template       libhttp.TemplateConfig `config:"rc"`
+	Enabled        bool                   `config:"rc"`                  // set to enable the server
+	Files          string                 `config:"rc_files"`            // set to enable serving files locally
+	Serve          bool                   `config:"rc_serve"`            // set to serve files from remotes
+	ServeNoModTime bool                   `config:"rc_serve_no_modtime"` // don't read the modification time
+	NoAuth         bool                   `config:"rc_no_auth"`          // set to disable auth checks on methods which require it
+	// DenyCommands lists exact remote control commands to disable. Any non-empty
+	// deny policy also disables core/command, which can launch arbitrary CLI commands.
+	DenyCommands        []string               `config:"rc_deny_commands"`
 	WebUI               bool                   `config:"rc_web_gui"`                 // set to launch the web ui **DEPRECATED**
 	WebGUIUpdate        bool                   `config:"rc_web_gui_update"`          // set to check new update **DEPRECATED**
 	WebGUIForceUpdate   bool                   `config:"rc_web_gui_force_update"`    // set to force download new update **DEPRECATED**

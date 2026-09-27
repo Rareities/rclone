@@ -10,6 +10,7 @@ import (
 
 	"github.com/rclone/rclone/backend/local"
 	"github.com/rclone/rclone/fs"
+	"github.com/rclone/rclone/fs/accounting"
 	"github.com/rclone/rclone/fs/config/configmap"
 	"github.com/stretchr/testify/require"
 )
@@ -24,6 +25,7 @@ func TestBisyncBackupDirReuseReplacesExistingPreservedPath(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			ctx, _ := fs.AddConfig(context.Background())
+			ctx = accounting.WithStatsGroup(ctx, t.TempDir())
 			root := t.TempDir()
 			leftRoot, rightRoot := filepath.Join(root, "left"), filepath.Join(root, "right")
 			workDir := filepath.Join(root, "work")

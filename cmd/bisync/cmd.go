@@ -133,7 +133,7 @@ func init() {
 	// Keep cmd/bisync/help.go and generated cmd/bisync/rc.md consistent with that distinction.
 	// Update the hand-maintained command-line syntax in docs/content/bisync.md separately.
 	flags.BoolVarP(cmdFlags, &Opt.Resync, "resync", "1", Opt.Resync, "Performs the resync run. Equivalent to --resync-mode path1. Consider using --verbose or --dry-run first.", "")
-	flags.BoolVarP(cmdFlags, &Opt.InspectState, "inspect-state", "", Opt.InspectState, "Read-only inspection of native Bisync listings; requires --workdir and does not recover or migrate state.", "")
+	flags.BoolVarP(cmdFlags, &Opt.InspectState, "inspect-state", "", Opt.InspectState, "Inspect native Bisync listings without recovery or migration; requires a writable --workdir and may leave a persistent empty .lck.guard file.", "")
 	flags.BoolVarP(cmdFlags, &Opt.PreviewJSON, "preview-json", "", Opt.PreviewJSON, "Write a versioned, path-free JSON summary; requires --dry-run.", "")
 	flags.FVarP(cmdFlags, &Opt.ResyncMode, "resync-mode", "", "During resync, prefer the version that is: path1, path2, newer, older, larger, smaller (default: path1 if --resync, otherwise none for no resync.)", "")
 	flags.BoolVarP(cmdFlags, &Opt.CheckAccess, "check-access", "", Opt.CheckAccess, MakeHelp("Ensure expected {CHECKFILE} files are found on both Path1 and Path2 filesystems, else abort."), "")

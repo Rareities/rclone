@@ -55,6 +55,7 @@ const (
 var (
 	errCanNotUploadFileWithUnknownSize = errors.New("proton Drive can't upload files with unknown size")
 	errCanNotPurgeRootDirectory        = errors.New("can't purge root directory")
+	errCanNotRmdirRootDirectory        = errors.New("can't remove root directory")
 	protonDriveInvalidVersionChars     = regexp.MustCompile(`[^0-9A-Za-z.+-]+`)
 )
 
@@ -984,9 +985,14 @@ func (f *Fs) Mkdir(ctx context.Context, dir string) error {
 //
 // Return an error if it doesn't exist or isn't empty
 func (f *Fs) Rmdir(ctx context.Context, dir string) error {
-	folderLinkID, err := f.dirCache.FindDir(ctx, f.sanitizePath(dir), false)
+	sanitizedDir := f.sanitizePath(dir)
+	if sanitizedDir == "" {
+		return errCanNotRmdirRootDirectory
+	}
+
+	folderLinkID, err := f.dirCache.FindDir(ctx, sanitizedDir, false)
 	if err == fs.ErrorDirNotFound {
-		return fmt.Errorf("[Rmdir] cannot find LinkID for dir %s (%s)", dir, f.sanitizePath(dir))
+		return fmt.Errorf("[Rmdir] cannot find LinkID for dir %s (%s)", dir, sanitizedDir)
 	} else if err != nil {
 		return err
 	}
@@ -1233,13 +1239,12 @@ func (o *Object) ID() string {
 //
 // Return an error if it doesn't exist
 func (f *Fs) Purge(ctx context.Context, dir string) error {
-	root := path.Join(f.root, dir)
-	if root == "" {
-		// we can't remove the root directory, but we can list the directory and delete every folder and file in here
+	sanitizedDir := f.sanitizePath(dir)
+	if sanitizedDir == "" {
 		return errCanNotPurgeRootDirectory
 	}
 
-	folderLinkID, err := f.dirCache.FindDir(ctx, f.sanitizePath(dir), false)
+	folderLinkID, err := f.dirCache.FindDir(ctx, sanitizedDir, false)
 	if err != nil {
 		return err
 	}

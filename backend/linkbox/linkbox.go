@@ -182,29 +182,27 @@ func NewFs(ctx context.Context, name, root string, m configmap.Mapper) (fs.Fs, e
 	if err != nil {
 		// Assume it is a file
 		newRoot, remote := dircache.SplitPath(root)
-		tempF := *f //nolint:govet // copying mutex is OK here as it is a new Fs
-		tempF.dirCache = dircache.New(newRoot, rootID, &tempF)
-		tempF.root = newRoot
-		// Make new Fs which is the parent
-		err = tempF.dirCache.FindRoot(ctx, false)
+		oldRoot, oldDirCache := f.root, f.dirCache
+		f.root = newRoot
+		f.dirCache = dircache.New(newRoot, rootID, f)
+		// Look up the parent root on the same Fs so the DirCache remains
+		// attached to its original owner and its mutex is never copied.
+		err = f.dirCache.FindRoot(ctx, false)
 		if err != nil {
+			f.root, f.dirCache = oldRoot, oldDirCache
 			// No root so return old f
 			return f, nil
 		}
-		_, err := tempF.NewObject(ctx, remote)
+		_, err := f.NewObject(ctx, remote)
 		if err != nil {
+			f.root, f.dirCache = oldRoot, oldDirCache
 			if err == fs.ErrorObjectNotFound {
 				// File doesn't exist so return old f
 				return f, nil
 			}
 			return nil, err
 		}
-		f.features.Fill(ctx, &tempF)
-		// XXX: update the old f here instead of returning tempF, since
-		// `features` were already filled with functions having *f as a receiver.
-		// See https://github.com/rclone/rclone/issues/2182
-		f.dirCache = tempF.dirCache
-		f.root = tempF.root
+		f.features.Fill(ctx, f)
 		// return an error with an fs which points to the parent
 		return f, fs.ErrorIsFile
 	}

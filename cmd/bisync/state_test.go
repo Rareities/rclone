@@ -14,6 +14,7 @@ import (
 	"github.com/rclone/rclone/backend/local"
 	"github.com/rclone/rclone/cmd/bisync/bilib"
 	"github.com/rclone/rclone/fs"
+	"github.com/rclone/rclone/fs/accounting"
 	"github.com/rclone/rclone/fs/config/configmap"
 	"github.com/stretchr/testify/require"
 )
@@ -28,6 +29,26 @@ func TestInspectStateDoesNotCreateMissingWorkdir(t *testing.T) {
 	require.Equal(t, "WORKDIR_ABSENT", result.Reason)
 	_, err := os.Stat(workDir)
 	require.True(t, errors.Is(err, os.ErrNotExist))
+}
+
+func TestInspectStateOnExistingEmptyWorkdirOnlyLeavesGuard(t *testing.T) {
+	ctx, _ := fs.AddConfig(context.Background())
+	fs1, fs2 := newInspectTestFilesystems(t, ctx)
+	workDir := t.TempDir()
+	base := bilib.SessionName(fs1, fs2)
+
+	result := InspectState(ctx, fs1, fs2, &Options{Workdir: workDir})
+	require.Equal(t, StateAbsent, result.Status)
+	require.Equal(t, "LISTINGS_ABSENT", result.Reason)
+
+	entries, err := os.ReadDir(workDir)
+	require.NoError(t, err)
+	require.Len(t, entries, 1, "inspection may create only the persistent serialization guard")
+	require.Equal(t, base+".lck.guard", entries[0].Name())
+	info, err := entries[0].Info()
+	require.NoError(t, err)
+	require.True(t, info.Mode().IsRegular())
+	require.Zero(t, info.Size(), "the persistent lock sidecar must remain empty")
 }
 
 func TestInspectStateCompatibleAndReadOnlyForListings(t *testing.T) {
@@ -55,6 +76,7 @@ func TestInspectStateCompatibleAndReadOnlyForListings(t *testing.T) {
 
 func TestDryRunPreservesRootBytesAndCanonicalListings(t *testing.T) {
 	ctx, _ := fs.AddConfig(context.Background())
+	ctx = accounting.WithStatsGroup(ctx, t.TempDir())
 	leftRoot, rightRoot := filepath.Join(t.TempDir(), "left"), filepath.Join(t.TempDir(), "right")
 	workDir := t.TempDir()
 	for _, root := range []string{leftRoot, rightRoot} {
@@ -228,6 +250,7 @@ func TestInspectStateBlocksWhileNativeOwnerHoldsGuard(t *testing.T) {
 
 func TestResyncBackupDirPreservesSameSizeSameModtimeLoser(t *testing.T) {
 	ctx, _ := fs.AddConfig(context.Background())
+	ctx = accounting.WithStatsGroup(ctx, t.TempDir())
 	config := fs.GetConfig(ctx)
 	priorIgnoreTimes := config.IgnoreTimes
 	config.IgnoreTimes = true
@@ -294,6 +317,7 @@ func TestResyncBackupDirPreservesSameSizeSameModtimeLoser(t *testing.T) {
 
 func TestResyncRejectsUnusableBackupTargetBeforeChangingRoots(t *testing.T) {
 	ctx, _ := fs.AddConfig(context.Background())
+	ctx = accounting.WithStatsGroup(ctx, t.TempDir())
 	leftRoot, rightRoot := filepath.Join(t.TempDir(), "left"), filepath.Join(t.TempDir(), "right")
 	workDir, backup1 := t.TempDir(), filepath.Join(t.TempDir(), "backup1")
 	backup2File := filepath.Join(t.TempDir(), "backup-target-is-a-file")
@@ -342,6 +366,7 @@ func TestResyncInitializesEmptyAndPopulatedRoots(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			ctx, _ := fs.AddConfig(context.Background())
+			ctx = accounting.WithStatsGroup(ctx, t.TempDir())
 			leftRoot, rightRoot := filepath.Join(t.TempDir(), "left"), filepath.Join(t.TempDir(), "right")
 			workDir := t.TempDir()
 			for _, root := range []string{leftRoot, rightRoot} {
@@ -386,6 +411,7 @@ func TestResyncInitializesEmptyAndPopulatedRoots(t *testing.T) {
 
 func TestResyncPreservesFileAndDirectoryCollisionVersions(t *testing.T) {
 	ctx, _ := fs.AddConfig(context.Background())
+	ctx = accounting.WithStatsGroup(ctx, t.TempDir())
 	leftRoot, rightRoot := filepath.Join(t.TempDir(), "left"), filepath.Join(t.TempDir(), "right")
 	workDir, backup1, backup2 := t.TempDir(), filepath.Join(t.TempDir(), "backup1"), filepath.Join(t.TempDir(), "backup2")
 	for _, root := range []string{leftRoot, rightRoot, backup1, backup2} {

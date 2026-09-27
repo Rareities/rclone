@@ -101,6 +101,65 @@ func TestShouldRetry(t *testing.T) {
 	}
 }
 
+type rootGuardTestDirCacher struct {
+	lookedUp []string
+}
+
+func (d *rootGuardTestDirCacher) FindLeaf(_ context.Context, _ string, leaf string) (string, bool, error) {
+	d.lookedUp = append(d.lookedUp, leaf)
+	return "", false, nil
+}
+
+func (d *rootGuardTestDirCacher) CreateDir(context.Context, string, string) (string, error) {
+	return "", errors.New("unexpected directory creation")
+}
+
+func TestPurgeRejectsRootDirectory(t *testing.T) {
+	for _, dir := range []string{"", ".", "./", "/", "///"} {
+		t.Run(fmt.Sprintf("%q", dir), func(t *testing.T) {
+			f := &Fs{root: "configured/base"}
+			err := f.Purge(context.Background(), dir)
+			assert.ErrorIs(t, err, errCanNotPurgeRootDirectory)
+		})
+	}
+}
+
+func TestRmdirRejectsRootDirectory(t *testing.T) {
+	for _, dir := range []string{"", ".", "./", "/", "///"} {
+		t.Run(fmt.Sprintf("%q", dir), func(t *testing.T) {
+			f := &Fs{root: "configured/base"}
+			err := f.Rmdir(context.Background(), dir)
+			assert.ErrorIs(t, err, errCanNotRmdirRootDirectory)
+		})
+	}
+}
+
+func TestPurgeLooksUpSubdirectory(t *testing.T) {
+	dirCacher := &rootGuardTestDirCacher{}
+	f := &Fs{
+		root:     "configured/base",
+		dirCache: dircache.New("", "root-id", dirCacher),
+	}
+
+	err := f.Purge(context.Background(), "archive")
+
+	assert.ErrorIs(t, err, fs.ErrorDirNotFound)
+	assert.Equal(t, []string{"archive"}, dirCacher.lookedUp)
+}
+
+func TestRmdirLooksUpSubdirectory(t *testing.T) {
+	dirCacher := &rootGuardTestDirCacher{}
+	f := &Fs{
+		root:     "configured/base",
+		dirCache: dircache.New("", "root-id", dirCacher),
+	}
+
+	err := f.Rmdir(context.Background(), "archive")
+
+	assert.ErrorContains(t, err, "[Rmdir] cannot find LinkID for dir archive (archive)")
+	assert.Equal(t, []string{"archive"}, dirCacher.lookedUp)
+}
+
 func TestProtonAuthHandlersStayBoundToTheirConfigMap(t *testing.T) {
 	firstMapper := configmap.Simple{}
 	secondMapper := configmap.Simple{}

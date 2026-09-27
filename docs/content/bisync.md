@@ -98,7 +98,7 @@ Positional arguments:
 Optional Flags:
       --backup-dir1 string                   --backup-dir for Path1. Must be a non-overlapping path on the same remote.
       --backup-dir2 string                   --backup-dir for Path2. Must be a non-overlapping path on the same remote.
-      --inspect-state                        Inspect native listings without syncing, migrating, or recovering them; requires --workdir.
+      --inspect-state                        Inspect native listings without syncing, migrating, or recovering them; requires a writable --workdir and may leave a persistent empty .lck.guard file.
       --preview-json                         Emit a versioned, path-free summary; requires --dry-run.
       --check-access                         Ensure expected RCLONE_TEST files are found on both Path1 and Path2 filesystems, else abort.
       --check-filename string                Filename for --check-access (default: RCLONE_TEST)
@@ -138,9 +138,11 @@ Optional Flags:
 legacy listing names or invokes recovery. Backend setup may still perform provider
 authentication or metadata requests. A missing work directory is reported as `ABSENT` without
 creating it; this describes only the supplied directory and does not prove that no legacy state
-exists elsewhere. When the directory exists, inspection briefly takes the native Bisync process
-guard (and may leave its empty `.guard` file behind) so it cannot read listings while a native
-run is changing them.
+exists elsewhere. An existing workdir must be writable and private to trusted users/processes.
+Inspection briefly takes the native Bisync process guard and may leave its persistent, empty
+`.guard` file behind so it cannot read listings while a cooperating native run is changing them.
+The guard does not coordinate with older or unrelated writers, and locking semantics on arbitrary
+network or cloud-synced filesystems have not been established.
 
 Possible statuses are `ABSENT`, `COMPATIBLE`, `INTERRUPTED`, `INCOMPATIBLE`, and `UNKNOWN`.
 Only `COMPATIBLE` means both current listing files are valid and agree under the selected native
