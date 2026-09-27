@@ -6,6 +6,7 @@ import (
 	"context"
 	"crypto/md5"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -17,6 +18,7 @@ import (
 	"github.com/rclone/rclone/cmd"
 	"github.com/rclone/rclone/cmd/bisync/bilib"
 	"github.com/rclone/rclone/fs"
+	"github.com/rclone/rclone/fs/accounting"
 	"github.com/rclone/rclone/fs/config"
 	"github.com/rclone/rclone/fs/config/flags"
 	"github.com/rclone/rclone/fs/filter"
@@ -32,13 +34,16 @@ type TestFunc func()
 // Options keep bisync options
 type Options struct {
 	Resync                bool   // whether or not this is a resync
+	InspectState          bool   // whether to inspect native state without synchronization
+	PreviewJSON           bool   // whether to write a path-free JSON summary of a dry run
 	ResyncMode            Prefer // which mode to use for resync
 	CheckAccess           bool
 	CheckFilename         string
 	CheckSync             CheckSyncMode
 	CreateEmptySrcDirs    bool
 	RemoveEmptyDirs       bool
-	MaxDelete             int // percentage from 0 to 100
+	MaxDelete             int // per-path percentage from 0 to 100
+	MaxDeleteCount        int64
 	Force                 bool
 	FiltersFile           string
 	Workdir               string
@@ -65,8 +70,9 @@ type Options struct {
 
 // Default values
 const (
-	DefaultMaxDelete     int    = 50
-	DefaultCheckFilename string = "RCLONE_TEST"
+	DefaultMaxDelete      int    = 10
+	DefaultMaxDeleteCount int64  = 25
+	DefaultCheckFilename  string = "RCLONE_TEST"
 )
 
 // DefaultWorkdir is default working directory
@@ -120,16 +126,20 @@ var Opt Options
 
 func init() {
 	Opt.MaxLock = 0
+	Opt.MaxDeleteCount = DefaultMaxDeleteCount
 	cmd.Root.AddCommand(commandDefinition)
 	cmdFlags := commandDefinition.Flags()
-	// when adding new flags, remember to also update the rc params:
-	// cmd/bisync/rc.go cmd/bisync/help.go (not docs/content/rc.md)
-	// and the Command line syntax section of docs/content/bisync.md (it doesn't update automatically)
+	// RC parameters are maintained in rc.go; CLI-only output options are excluded from RC help.
+	// Keep cmd/bisync/help.go and generated cmd/bisync/rc.md consistent with that distinction.
+	// Update the hand-maintained command-line syntax in docs/content/bisync.md separately.
 	flags.BoolVarP(cmdFlags, &Opt.Resync, "resync", "1", Opt.Resync, "Performs the resync run. Equivalent to --resync-mode path1. Consider using --verbose or --dry-run first.", "")
+	flags.BoolVarP(cmdFlags, &Opt.InspectState, "inspect-state", "", Opt.InspectState, "Inspect native Bisync listings without recovery or migration; requires a writable --workdir and may leave a persistent empty .lck.guard file.", "")
+	flags.BoolVarP(cmdFlags, &Opt.PreviewJSON, "preview-json", "", Opt.PreviewJSON, "Write a versioned, path-free JSON summary; requires --dry-run.", "")
 	flags.FVarP(cmdFlags, &Opt.ResyncMode, "resync-mode", "", "During resync, prefer the version that is: path1, path2, newer, older, larger, smaller (default: path1 if --resync, otherwise none for no resync.)", "")
 	flags.BoolVarP(cmdFlags, &Opt.CheckAccess, "check-access", "", Opt.CheckAccess, MakeHelp("Ensure expected {CHECKFILE} files are found on both Path1 and Path2 filesystems, else abort."), "")
 	flags.StringVarP(cmdFlags, &Opt.CheckFilename, "check-filename", "", Opt.CheckFilename, MakeHelp("Filename for --check-access (default: {CHECKFILE})"), "")
-	flags.BoolVarP(cmdFlags, &Opt.Force, "force", "", Opt.Force, "Bypass --max-delete safety check and run the sync. Consider using with --verbose", "")
+	flags.BoolVarP(cmdFlags, &Opt.Force, "force", "", Opt.Force, "Bypass the --max-delete percentage check (not the absolute --max-delete-count guard). Consider using with --verbose", "")
+	flags.Int64VarP(cmdFlags, &Opt.MaxDeleteCount, "max-delete-count", "", DefaultMaxDeleteCount, "Maximum aggregate number of observed deletions across both paths (must be positive; cannot be bypassed with --force)", "")
 	flags.FVarP(cmdFlags, &Opt.CheckSync, "check-sync", "", "Controls comparison of final listings: true|false|only (default: true)", "")
 	flags.BoolVarP(cmdFlags, &Opt.CreateEmptySrcDirs, "create-empty-src-dirs", "", Opt.CreateEmptySrcDirs, "Sync creation and deletion of empty directories. (Not compatible with --remove-empty-dirs)", "")
 	flags.BoolVarP(cmdFlags, &Opt.RemoveEmptyDirs, "remove-empty-dirs", "", Opt.RemoveEmptyDirs, "Remove ALL empty directories at the final cleanup step.", "")
@@ -147,7 +157,7 @@ func init() {
 	flags.BoolVarP(cmdFlags, &Opt.Compare.NoSlowHash, "no-slow-hash", "", Opt.Compare.NoSlowHash, "Ignore listing checksums only on backends where they are slow", "")
 	flags.BoolVarP(cmdFlags, &Opt.Compare.SlowHashSyncOnly, "slow-hash-sync-only", "", Opt.Compare.SlowHashSyncOnly, "Ignore slow checksums for listings and deltas, but still consider them during sync calls.", "")
 	flags.BoolVarP(cmdFlags, &Opt.Compare.DownloadHash, "download-hash", "", Opt.Compare.DownloadHash, "Compute hash by downloading when otherwise unavailable. (warning: may be slow and use lots of data!)", "")
-	flags.FVarP(cmdFlags, &Opt.MaxLock, "max-lock", "", "Consider lock files older than this to be expired (default: 0 (never expire)) (minimum: 2m)", "")
+	flags.FVarP(cmdFlags, &Opt.MaxLock, "max-lock", "", "Diagnostic lock-heartbeat interval (minimum: 2m); OS ownership is authoritative and a stale heartbeat never permits takeover (default: 0, no heartbeat)", "")
 	flags.FVarP(cmdFlags, &Opt.ConflictResolve, "conflict-resolve", "", "Automatically resolve conflicts by preferring the version that is: "+ConflictResolveList+" (default: none)", "")
 	flags.FVarP(cmdFlags, &Opt.ConflictLoser, "conflict-loser", "", "Action to take on the loser of a sync conflict (when there is a winner) or on both files (when there is no winner): "+ConflictLoserList+" (default: num)", "")
 	flags.StringVarP(cmdFlags, &Opt.ConflictSuffixFlag, "conflict-suffix", "", Opt.ConflictSuffixFlag, "Suffix to use when renaming a --conflict-loser. Can be either one string or two comma-separated strings to assign different suffixes to Path1/Path2. (default: 'conflict')", "")
@@ -169,14 +179,29 @@ var commandDefinition = &cobra.Command{
 		// NOTE: avoid putting too much handling here, as it won't apply to the rc.
 		// Generally it's best to put init-type stuff in Bisync() (operations.go)
 		cmd.CheckArgs(2, 2, command, args)
+		ctx := context.Background()
+		opt := Opt
+		opt.applyContext(ctx)
+		if err := validatePreviewJSON(opt.PreviewJSON, opt.DryRun, opt.InspectState); err != nil {
+			return err
+		}
 		fs1, file1, fs2, file2 := cmd.NewFsSrcDstFiles(args)
 		if file1 != "" || file2 != "" {
 			return errors.New("paths must be existing directories")
 		}
 
-		ctx := context.Background()
-		opt := Opt
-		opt.applyContext(ctx)
+		if opt.InspectState {
+			for _, name := range []string{"resync", "resync-mode", "force", "check-access", "remove-empty-dirs", "create-empty-src-dirs", "recover", "backup-dir1", "backup-dir2", "filters-file", "preview-json"} {
+				if command.Flags().Changed(name) {
+					return fmt.Errorf("--inspect-state cannot be combined with --%s", name)
+				}
+			}
+			inspection := InspectState(ctx, fs1, fs2, &opt)
+			return json.NewEncoder(command.OutOrStdout()).Encode(inspection)
+		}
+		if command.Flags().Changed("max-delete-count") && opt.MaxDeleteCount <= 0 {
+			return errors.New("--max-delete-count must be a positive integer")
+		}
 		if tzLocal {
 			TZ = time.Local
 		}
@@ -196,7 +221,13 @@ var commandDefinition = &cobra.Command{
 			if err == ErrBisyncAborted {
 				return fserrors.FatalError(err)
 			}
-			return err
+			if err != nil {
+				return err
+			}
+			if opt.PreviewJSON {
+				return writePreviewJSON(command.OutOrStdout(), accounting.GlobalStats())
+			}
+			return nil
 		})
 		return nil
 	},

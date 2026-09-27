@@ -943,6 +943,7 @@ func TestSyncIgnoreExisting(t *testing.T) {
 func TestSyncIgnoreErrors(t *testing.T) {
 	ctx := context.Background()
 	ctx, ci := fs.AddConfig(ctx)
+	ctx = accounting.WithStatsGroup(ctx, t.TempDir())
 	r := fstest.NewRun(t)
 	ci.IgnoreErrors = true
 	file1 := r.WriteFile("a/potato2", "------------------------------------------------------------", t1)
@@ -3005,6 +3006,10 @@ func testNothingToTransfer(t *testing.T, copyEmptySrcDirs bool) {
 		return
 	}
 	file3 := r.WriteFile("sub dir2/sub dir3/hello world", "hello again, world", t1)
+	// Pin the newly written child's timestamp so Windows write-time updates cannot
+	// race directory traversal and delayed destination metadata propagation.
+	_, err = operations.SetDirModTime(ctx, r.Flocal, nil, "sub dir2/sub dir3", t1)
+	assert.NoError(t, err)
 	_, err = operations.SetDirModTime(ctx, r.Flocal, nil, "sub dir2", t1)
 	assert.NoError(t, err)
 	_, err = operations.SetDirModTime(ctx, r.Fremote, nil, "sub dir2", t1)

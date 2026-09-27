@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -1006,6 +1007,178 @@ func TestWithUserPass(t *testing.T) {
 	opt.Auth.BasicUser = "user"
 	opt.Auth.BasicPass = "pass"
 	testServer(t, tests, &opt)
+}
+
+// TestDenyCommands must not run in parallel because it temporarily swaps rc.Calls.
+func TestDenyCommands(t *testing.T) {
+	const (
+		commandPath  = "rc/list"
+		bisyncPath   = "sync/bisync"
+		testUser     = "deny-test-user"
+		testPassword = "deny-test-pass"
+	)
+	// Clone the process-global registry so the test can model the production
+	// Bisync route without leaking a fake handler into other package tests.
+	originalCalls := rc.Calls
+	testCalls := rc.NewRegistry()
+	for _, call := range originalCalls.List() {
+		testCalls.Add(*call)
+	}
+	rc.Calls = testCalls
+	t.Cleanup(func() { rc.Calls = originalCalls })
+	var bisyncInvocations atomic.Int32
+	rc.Add(rc.Call{
+		Path: bisyncPath,
+		Fn: func(context.Context, rc.Params) (rc.Params, error) {
+			bisyncInvocations.Add(1)
+			return rc.Params{}, nil
+		},
+	})
+
+	opt := newTestOpt()
+	opt.Auth.BasicUser = testUser
+	opt.Auth.BasicPass = testPassword
+	opt.DenyCommands = []string{commandPath, bisyncPath}
+	testServer(t, []testRun{{
+		Name:           "denied registered command is not queued",
+		URL:            commandPath,
+		User:           testUser,
+		Pass:           testPassword,
+		Method:         "POST",
+		Body:           `{}`,
+		ContentType:    "application/json",
+		RequestHeaders: map[string]string{"Prefer": "respond-async"},
+		Status:         http.StatusForbidden,
+		Contains:       regexp.MustCompile(`disabled by --rc-deny-commands`),
+		Headers: map[string]string{
+			"x-rclone-jobid":     "",
+			"Preference-Applied": "",
+		},
+	}, {
+		Name:           "generic CLI dispatch cannot bypass an active deny policy",
+		URL:            "core/command",
+		User:           testUser,
+		Pass:           testPassword,
+		Method:         "POST",
+		Body:           `{"command":"version"}`,
+		ContentType:    "application/json",
+		RequestHeaders: map[string]string{"Prefer": "respond-async"},
+		Status:         http.StatusForbidden,
+		Contains:       regexp.MustCompile(`disabled by --rc-deny-commands`),
+		Headers: map[string]string{
+			"x-rclone-jobid":     "",
+			"Preference-Applied": "",
+		},
+	}, {
+		Name:        "batch cannot bypass a nested command deny",
+		URL:         "job/batch",
+		User:        testUser,
+		Pass:        testPassword,
+		Method:      "POST",
+		Body:        `{"concurrency":1,"inputs":[{"_path":"rc/list"}]}`,
+		ContentType: "application/json",
+		Status:      http.StatusOK,
+		Contains:    regexp.MustCompile(`(?s)disabled by --rc-deny-commands.*"status":\s*403`),
+	}, {
+		Name:        "concurrent batch cannot bypass a nested Bisync deny",
+		URL:         "job/batch",
+		User:        testUser,
+		Pass:        testPassword,
+		Method:      "POST",
+		Body:        `{"concurrency":2,"inputs":[{"_path":"sync/bisync"},{"_path":"sync/bisync"}]}`,
+		ContentType: "application/json",
+		Status:      http.StatusOK,
+		Contains:    regexp.MustCompile(`(?s)disabled by --rc-deny-commands.*"status":\s*403.*disabled by --rc-deny-commands.*"status":\s*403`),
+	}, {
+		Name:           "synthetic registered Bisync path is denied before queueing",
+		URL:            bisyncPath,
+		User:           testUser,
+		Pass:           testPassword,
+		Method:         "POST",
+		Body:           `{}`,
+		ContentType:    "application/json",
+		RequestHeaders: map[string]string{"Prefer": "respond-async"},
+		Status:         http.StatusForbidden,
+		Contains:       regexp.MustCompile(`disabled by --rc-deny-commands`),
+		Headers: map[string]string{
+			"x-rclone-jobid":     "",
+			"Preference-Applied": "",
+		},
+	}, {
+		Name:        "auth middleware still rejects missing credentials first",
+		URL:         commandPath,
+		Method:      "POST",
+		Body:        `{}`,
+		ContentType: "application/json",
+		Status:      http.StatusUnauthorized,
+		Contains:    regexp.MustCompile(`Unauthorized`),
+	}}, &opt)
+	assert.Zero(t, bisyncInvocations.Load(), "a denied direct or nested Bisync command must never run")
+}
+
+func TestDenyCommandsMatchExactPath(t *testing.T) {
+	server := &Server{denyCommands: map[string]struct{}{
+		"sync/bisync": {},
+	}}
+	assert.True(t, server.isCommandDenied("sync/bisync"))
+	assert.True(t, server.isCommandDenied("core/command"))
+	assert.False(t, server.isCommandDenied("sync/bisync-extra"))
+	assert.False(t, server.isCommandDenied("sync/sync/bisync"))
+	assert.False(t, (&Server{}).isCommandDenied("core/command"))
+	assert.False(t, (&Server{}).isCommandDenied("rc/list"))
+}
+
+func TestDenyCommandSetRejectsMalformedPaths(t *testing.T) {
+	for _, command := range []string{
+		"",
+		"/sync/bisync",
+		"sync/bisync/",
+		"sync//bisync",
+		"sync\\bisync",
+		"sync/bisync ",
+		"sync/bi sync",
+		"sync/bisync\u00a0",
+		"sync/bi\x00sync",
+		"sync%2Fbisync",
+		"sync%2fbisync",
+		"sync%252Fbisync",
+		"sync/%ZZ",
+		"sync/bisync?mode=1",
+		"sync/bisync#fragment",
+		"sync/./bisync",
+		"sync/../bisync",
+	} {
+		t.Run(fmt.Sprintf("%q", command), func(t *testing.T) {
+			_, err := denyCommandSet([]string{command})
+			require.ErrorContains(t, err, "invalid --rc-deny-commands")
+		})
+	}
+}
+
+func TestDenyCommandSetAllowsEmptyAndCanonicalPaths(t *testing.T) {
+	empty, err := denyCommandSet(nil)
+	require.NoError(t, err)
+	assert.Empty(t, empty)
+
+	denied, err := denyCommandSet([]string{"sync/bisync", "sync/bisync"})
+	require.NoError(t, err)
+	assert.Equal(t, map[string]struct{}{"sync/bisync": {}}, denied)
+}
+
+func TestNewServerRejectsMalformedDenyCommand(t *testing.T) {
+	opt := newTestOpt()
+	opt.DenyCommands = []string{"sync//bisync"}
+	server, err := newServer(context.Background(), &opt, http.DefaultServeMux)
+	require.Nil(t, server)
+	require.ErrorContains(t, err, "invalid --rc-deny-commands")
+}
+
+func TestStartRejectsMalformedDenyCommand(t *testing.T) {
+	opt := newTestOpt()
+	opt.DenyCommands = []string{"sync//bisync"}
+	server, err := Start(context.Background(), &opt)
+	require.Nil(t, server)
+	require.ErrorContains(t, err, "invalid --rc-deny-commands")
 }
 
 func TestRCAsync(t *testing.T) {

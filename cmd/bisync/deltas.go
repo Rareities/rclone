@@ -560,6 +560,26 @@ func (ds *deltaSet) excessDeletes() bool {
 	return true
 }
 
+// checkDeleteLimits applies the absolute aggregate guard before the legacy
+// per-path percentage guard. The aggregate count includes each observed
+// deletion on each path, including the same name deleted on both paths.
+func (b *bisyncRun) checkDeleteLimits(ds1, ds2 *deltaSet) error {
+	if b.opt.MaxDeleteCount <= 0 {
+		return fmt.Errorf("--max-delete-count must be a positive integer")
+	}
+	observed := int64(ds1.deleted) + int64(ds2.deleted)
+	if observed > b.opt.MaxDeleteCount {
+		fs.Errorf("Safety abort",
+			"observed %d aggregate deletions across both paths exceeds --max-delete-count=%d; this absolute guard cannot be bypassed with --force",
+			observed, b.opt.MaxDeleteCount)
+		return fmt.Errorf("too many aggregate deletes (%d exceeds %d)", observed, b.opt.MaxDeleteCount)
+	}
+	if !b.opt.Force && (ds1.excessDeletes() || ds2.excessDeletes()) {
+		return fmt.Errorf("too many deletes")
+	}
+	return nil
+}
+
 // normally we build the AliasMap from march results,
 // however, march does not know about deleted files, so need to manually check them for aliases
 func (b *bisyncRun) updateAliases(ctx context.Context, ds1, ds2 *deltaSet) {

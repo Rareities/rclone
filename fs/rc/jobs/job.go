@@ -29,6 +29,31 @@ func init() {
 	cache.JobGetJobID = GetJobID
 }
 
+type denyCommandsContextKey struct{}
+
+// WithDenyCommands adds an immutable snapshot of the RC server's command deny
+// list to a request context. Nested RC dispatchers such as job/batch must apply
+// the same policy as the outer HTTP route.
+func WithDenyCommands(ctx context.Context, commands map[string]struct{}) context.Context {
+	if len(commands) == 0 {
+		return ctx
+	}
+	commandsSnapshot := make(map[string]struct{}, len(commands))
+	for command := range commands {
+		commandsSnapshot[command] = struct{}{}
+	}
+	return context.WithValue(ctx, denyCommandsContextKey{}, commandsSnapshot)
+}
+
+func isCommandDenied(ctx context.Context, path string) bool {
+	commands, ok := ctx.Value(denyCommandsContextKey{}).(map[string]struct{})
+	if !ok {
+		return false
+	}
+	_, denied := commands[path]
+	return denied
+}
+
 // Job describes an asynchronous task started via the rc package
 type Job struct {
 	mu        sync.Mutex
@@ -502,6 +527,9 @@ func NewJobFromParams(ctx context.Context, in rc.Params) (out rc.Params) {
 	call := rc.Calls.Get(path)
 	if call == nil {
 		return rcError(fmt.Errorf("couldn't find path %q", path), http.StatusNotFound)
+	}
+	if isCommandDenied(ctx, path) {
+		return rcError(fmt.Errorf("remote control command %q is disabled by --rc-deny-commands", path), http.StatusForbidden)
 	}
 	if call.NeedsRequest {
 		return rcError(fmt.Errorf("can't run path %q as it needs the request", path), http.StatusBadRequest)

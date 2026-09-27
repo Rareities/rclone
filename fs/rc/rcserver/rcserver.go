@@ -15,6 +15,7 @@ import (
 	"sort"
 	"strings"
 	"time"
+	"unicode"
 
 	"github.com/go-chi/chi/v5/middleware"
 	"github.com/rclone/rclone/fs"
@@ -33,15 +34,17 @@ import (
 //
 // If the server wasn't configured the *Server returned may be nil
 func Start(ctx context.Context, opt *rc.Options) (*Server, error) {
-	jobs.SetOpt(opt) // set the defaults for jobs
 	if opt.Enabled {
+		// Build and validate the server before mutating the global job defaults.
 		// Serve on the DefaultServeMux so can have global registrations appear
 		s, err := newServer(ctx, opt, http.DefaultServeMux)
 		if err != nil {
 			return nil, err
 		}
+		jobs.SetOpt(opt) // set the defaults for jobs
 		return s, s.Serve()
 	}
+	jobs.SetOpt(opt) // set the defaults for jobs
 	return nil, nil
 }
 
@@ -52,7 +55,38 @@ type Server struct {
 	files          http.Handler
 	pluginsHandler http.Handler
 	opt            *rc.Options
+	denyCommands   map[string]struct{}
 	noAuth         bool // snapshot of opt.NoAuth at startup to prevent runtime mutation
+}
+
+func (s *Server) isCommandDenied(path string) bool {
+	_, denied := s.denyCommands[path]
+	// core/command can launch arbitrary rclone CLI commands, including commands
+	// whose RC routes are denied. There is no reliable one-to-one route mapping
+	// for its arguments, so disable this generic dispatcher whenever a deny
+	// policy is active.
+	denied = denied || path == "core/command" && len(s.denyCommands) != 0
+	return denied
+}
+
+func denyCommandSet(commands []string) (map[string]struct{}, error) {
+	denied := make(map[string]struct{}, len(commands))
+	for _, command := range commands {
+		// Match the server's decoded URL.Path literally; reject encoded aliases.
+		decoded, decodeErr := url.PathUnescape(command)
+		invalid := command == "" || strings.HasPrefix(command, "/") || strings.HasSuffix(command, "/") ||
+			strings.Contains(command, "//") || strings.Contains(command, "\\") || strings.ContainsAny(command, "?#") ||
+			strings.IndexFunc(command, func(r rune) bool { return unicode.IsSpace(r) || unicode.IsControl(r) }) >= 0 ||
+			decodeErr != nil || decoded != command
+		for _, component := range strings.Split(command, "/") {
+			invalid = invalid || component == "." || component == ".."
+		}
+		if invalid {
+			return nil, fmt.Errorf("invalid --rc-deny-commands value %q: expected a canonical command path", command)
+		}
+		denied[command] = struct{}{}
+	}
+	return denied, nil
 }
 
 func newServer(ctx context.Context, opt *rc.Options, mux *http.ServeMux) (*Server, error) {
@@ -69,16 +103,20 @@ func newServer(ctx context.Context, opt *rc.Options, mux *http.ServeMux) (*Serve
 	} else if opt.WebUI {
 		return nil, errors.New("--rc-web-gui has been superseded by the `rclone gui` command")
 	}
+	denyCommands, err := denyCommandSet(opt.DenyCommands)
+	if err != nil {
+		return nil, err
+	}
 
 	s := &Server{
 		ctx:            ctx,
 		opt:            opt,
 		files:          fileHandler,
 		pluginsHandler: pluginsHandler,
+		denyCommands:   denyCommands,
 		noAuth:         opt.NoAuth,
 	}
 
-	var err error
 	s.server, err = libhttp.NewServer(ctx,
 		libhttp.WithConfig(opt.HTTP),
 		libhttp.WithAuth(opt.Auth),
@@ -253,6 +291,11 @@ func (s *Server) handlePost(w http.ResponseWriter, r *http.Request, path string)
 		writeError(path, in, w, fmt.Errorf("authentication must be set up on the rc server to use %q or the --rc-no-auth flag must be in use", path), http.StatusForbidden)
 		return
 	}
+	if s.isCommandDenied(path) {
+		writeError(path, in, w, fmt.Errorf("remote control command %q is disabled by --rc-deny-commands", path), http.StatusForbidden)
+		return
+	}
+	ctx = jobs.WithDenyCommands(ctx, s.denyCommands)
 
 	inOrig := in.Copy()
 

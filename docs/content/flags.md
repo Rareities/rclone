@@ -282,6 +282,7 @@ Flags to control the Remote Control API.
       --rc-baseurl string                  Prefix for URLs - leave blank for root
       --rc-cert string                     TLS PEM key (concatenation of certificate and CA certificate)
       --rc-client-ca string                Client certificate authority to verify clients with
+      --rc-deny-commands stringArray       Exact remote control command to deny; may be repeated (e.g. sync/bisync); also disables core/command while any deny is active
       --rc-enable-metrics                  Enable the Prometheus metrics path at the remote control server
       --rc-files string                    Path to local files to serve on the HTTP server
       --rc-htpasswd string                 A htpasswd file - if not provided no authentication is done

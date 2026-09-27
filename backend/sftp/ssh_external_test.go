@@ -3,6 +3,7 @@
 package sftp
 
 import (
+	"runtime"
 	"testing"
 	"time"
 
@@ -10,12 +11,19 @@ import (
 	"github.com/stretchr/testify/assert"
 )
 
+func externalShell() fs.SpaceSepList {
+	if runtime.GOOS == "windows" {
+		return fs.SpaceSepList{"cmd", "/d", "/c"}
+	}
+	return fs.SpaceSepList{"echo", "test"}
+}
+
 // TestSSHExternalWaitMultipleCalls verifies that calling Wait() multiple times
 // doesn't cause zombie processes
 func TestSSHExternalWaitMultipleCalls(t *testing.T) {
 	// Create a minimal Fs object for testing
 	opt := &Options{
-		SSH: fs.SpaceSepList{"echo", "test"},
+		SSH: externalShell(),
 	}
 
 	f := &Fs{
@@ -51,7 +59,7 @@ func TestSSHExternalWaitMultipleCalls(t *testing.T) {
 func TestSSHExternalCloseMultipleCalls(t *testing.T) {
 	// Create a minimal Fs object for testing
 	opt := &Options{
-		SSH: fs.SpaceSepList{"sleep", "10"},
+		SSH: externalShell(),
 	}
 
 	f := &Fs{
@@ -62,7 +70,11 @@ func TestSSHExternalCloseMultipleCalls(t *testing.T) {
 	session := f.newSSHSessionExternal()
 
 	// Start a long-running command
-	err := session.Start("sleep 10")
+	command := "sleep 10"
+	if runtime.GOOS == "windows" {
+		command = "timeout /t 10 /nobreak >NUL"
+	}
+	err := session.Start(command)
 	if err != nil {
 		t.Skip("Cannot start sleep command:", err)
 	}

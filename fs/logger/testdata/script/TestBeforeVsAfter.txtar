@@ -13,18 +13,18 @@ exec rclone md5sum $SRC --output-file $WORK/src-after.txt
 exec rclone md5sum $DST --output-file $WORK/dst-after.txt
 
 # sorting them by line and diffing:
-exec sort $WORK/src-before.txt -o $WORK/src-before.txt
-exec sort $WORK/dst-before.txt -o $WORK/dst-before.txt
-exec sort $WORK/src-after.txt -o $WORK/src-after.txt
-exec sort $WORK/dst-after.txt -o $WORK/dst-after.txt
+sortfiles $WORK/src-before.txt
+sortfiles $WORK/dst-before.txt
+sortfiles $WORK/src-after.txt
+sortfiles $WORK/dst-after.txt
 
-exec sort $WORK/SYNCmatch.txt -o $WORK/SYNCmatch.txt
-exec sort $WORK/SYNCcombined.txt -o $WORK/SYNCcombined.txt
-exec sort $WORK/SYNCmissingonsrc.txt -o $WORK/SYNCmissingonsrc.txt
-exec sort $WORK/SYNCmissingondst.txt -o $WORK/SYNCmissingondst.txt
-exec sort $WORK/SYNCerr.txt -o $WORK/SYNCerr.txt
-exec sort $WORK/SYNCdiffer.txt -o $WORK/SYNCdiffer.txt
-exec sort $WORK/SYNCdestafter.txt -o $WORK/SYNCdestafter.txt
+sortfiles $WORK/SYNCmatch.txt
+sortfiles $WORK/SYNCcombined.txt
+sortfiles $WORK/SYNCmissingonsrc.txt
+sortfiles $WORK/SYNCmissingondst.txt
+sortfiles $WORK/SYNCerr.txt
+sortfiles $WORK/SYNCdiffer.txt
+sortfiles $WORK/SYNCdestafter.txt
 
 # diff src before vs src after:
 cmp $WORK/src-before.txt $WORK/src-after.txt

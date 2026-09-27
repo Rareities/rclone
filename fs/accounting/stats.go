@@ -697,6 +697,13 @@ func (s *StatsInfo) DeletedDirs(deletedDirs int64) int64 {
 	return s.deletedDirs
 }
 
+// GetDeletedDirs returns the number of deleted directories.
+func (s *StatsInfo) GetDeletedDirs() int64 {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.deletedDirs
+}
+
 // UpdatedDirs updates the stats for updatedDirs
 func (s *StatsInfo) UpdatedDirs(updatedDirs int64) int64 {
 	s.mu.Lock()
