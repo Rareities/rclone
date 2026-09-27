@@ -1,5 +1,23 @@
 # Rareities/rclone patch ledger
 
+## Current cross-repository verification checkpoint — 2026-09-27 (no new engine source)
+
+- The current CloudBridge pass did not alter Rareities/rclone source or its immutable app
+  pin. The fork branch remains `codex/luna-engine-final` at
+  `6533d01df0a6395833d6910938e2d1fa97628ea7d`; CloudBridge continues to build against
+  exact source `cf3ad40d29d15919af116a5d1e64e0381e2ce3fd`.
+- Existing Go 1.26.8 Windows/amd64 evidence remains valid for the unchanged branch:
+  focused `backend/mega`, `cmd/bisync`, `fs/sync`, `fs/operations`, `fs/accounting` and
+  `fs/cache` tests pass, and `go vet -mod=readonly ./...` passes. The full short suite is
+  **NOT PASS** because the checkout lacks the upstream `fstest/testserver/init.d` scripts
+  required by FTP, HDFS, SFTP, SIA, SMB, Swift and WebDAV integration cases; the WebDAV range
+  case also fails because its harness server ignored the requested range. These unavailable /
+  harness-limited cases are not converted to skips or claimed as acceptance.
+- The go-mega candidate remains a supporting, non-promoted dependency; race/live-MEGA,
+  cross-platform, Proton/provider, Samsung/device, hosted-CI, signing and release gates are
+  **NOT RUN/NO-GO**. No upstream/original PR is created or updated; the user's PR hold remains
+  in force until all coding, documentation and verification work is complete.
+
 ## Windows test portability correction — 2026-09-27 (PRs deferred by instruction)
 
 - Test-only commit `dc80d83` makes the independent Windows suite portable without changing
@@ -9,9 +27,10 @@
 - Focused checks pass with Go 1.26.8: `fs/config`, `fs/logger`, and the two SFTP external-session
   regressions. The final complete `go test -short -mod=readonly -count=1 ./...` run from this
   commit also passes the core Bisync/sync/operations/cache/accounting scopes and WebDAV range
-  behavior; it exits 1 only because the host lacks launchable
-  `fstest/testserver/init.d` fixtures for FTP, HDFS, SFTP, SIA, SMB, Swift and WebDAV. These are
-  explicit unavailable test infrastructure, not converted to skips or claimed as passes.
+  behavior; it exits 1 because the host lacks launchable
+  `fstest/testserver/init.d` fixtures for FTP, HDFS, SFTP, SIA, SMB, Swift and WebDAV, and the
+  current WebDAV range harness reports that its server ignored the requested range. These are
+  explicit unavailable/harness-limited cases, not converted to skips or claimed as passes.
 - `go vet -mod=readonly ./...`, Proton/device/release gates and upstream/original PR activity
   remain separately tracked; PR creation stays deferred by user instruction.
 
