@@ -6,7 +6,9 @@
   verifies that its Bisync preview capability table matches the exact engine pin
   `cf3ad40d29d15919af116a5d1e64e0381e2ce3fd`. The app's 489-test-per-flavor JVM sweep,
   lint, Android-test source compilation and debug packaging pass locally. This is linkage
-  evidence only; it does not promote the engine or close rclone WP gates.
+  evidence only; it does not promote the engine or close rclone WP gates. The final fork CI
+  evidence head is `db9ad74769eee614121406ed0b89741f0018d8f8`; hosted Android CI and its
+  debug artifact `10925781828` are green/debug-only, not engine release acceptance.
 - Rareities/rclone source remains unchanged at its fork-only branch and PR ledger state.
   Focused engine tests and vet pass, while the Windows full short suite remains **NOT PASS**
   because the required test-server fixtures and WebDAV range harness are unavailable or
