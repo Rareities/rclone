@@ -1,5 +1,28 @@
 # Rareities/rclone patch ledger
 
+## Final independent verification — 2026-09-27 (PRs deferred by instruction)
+
+- Rareities/rclone `codex/luna-engine-final` is verified at
+  `cf3ad40d29d15919af116a5d1e64e0381e2ce3fd` (`rclone: record safety guard and test-isolation
+  fixes`). No new engine source change was needed in this pass; the branch is already pushed to
+  the Rareities fork and the commit is unsigned.
+- Exact isolated Rareities/go-mega commit `24d3fadc8735096fafbaac00eb3a95a2017033e5` on
+  `Rareities/go-mega:codex/luna-wp01-final` passes standalone short tests/vet and the exact
+  rclone `backend/mega` integration test. It is not promoted into production `go.mod` because
+  race/live-MEGA, full cross-platform, and release-provenance evidence are **NOT RUN**.
+- Independent core rerun with Go 1.26.8 and `-mod=readonly` passes `backend/mega`, `cmd/bisync`,
+  `fs/sync`, `fs/operations`, `fs/accounting`, and `fs/cache`. Full `go vet -mod=readonly ./...`
+  passes.
+- The complete `go test -short -mod=readonly ./...` run exits 1. Preserved causes are missing
+  Windows test-server init scripts for FTP/HDFS/SFTP/SIA/SMB/Swift/WebDAV, missing executable
+  `echo`/in-place POSIX `sort` support for `fs/config` and `fs/logger`, and a WebDAV range fixture
+  that does not honor the requested range. These are test-environment limitations and remain
+  unresolved evidence; they are not reported as passes and no production workaround was added.
+- WP07/WP09 remain partial: core Bisync/root-guard slices pass, but worker drain, Proton
+  auth/refresh ownership, official-client interoperability and live disposable Proton tests are
+  open or **NOT RUN**. Samsung/device, race, multi-process, and release acceptance remain
+  **NOT RUN/NO-GO**. No upstream/original PR is created or updated.
+
 ## Latest WP00 test-isolation evidence — 2026-09-27
 
 - WP09 root safety is now fixed at the Proton backend owning layer: `Purge` and `Rmdir` reject sanitized empty/dot/slash root spellings and focused tests verify that ordinary subdirectory lookup remains reachable. `go test -short -mod=readonly ./backend/protondrive -count=1` and `go vet -mod=readonly ./backend/protondrive` pass offline with no credentials/network. This does not close Proton: upload-worker drain, cached-login error classification, refresh ownership, hash/cache invalidation, official-client interoperability, race and live disposable-vault acceptance remain open/NOT RUN.
