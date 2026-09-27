@@ -1,5 +1,20 @@
 # Rareities/rclone patch ledger
 
+## Windows test portability correction — 2026-09-27 (PRs deferred by instruction)
+
+- Test-only commit `dc80d83` makes the independent Windows suite portable without changing
+  production transfer or SSH behavior: config password-command tests use an argv-safe Windows
+  shell, logger scripts use in-process deterministic line/tree comparison instead of Unix-only
+  `sort`/`diff`, and SFTP external-session tests use platform-appropriate shell commands.
+- Focused checks pass with Go 1.26.8: `fs/config`, `fs/logger`, and the two SFTP external-session
+  regressions. The final complete `go test -short -mod=readonly -count=1 ./...` run from this
+  commit also passes the core Bisync/sync/operations/cache/accounting scopes and WebDAV range
+  behavior; it exits 1 only because the host lacks launchable
+  `fstest/testserver/init.d` fixtures for FTP, HDFS, SFTP, SIA, SMB, Swift and WebDAV. These are
+  explicit unavailable test infrastructure, not converted to skips or claimed as passes.
+- `go vet -mod=readonly ./...`, Proton/device/release gates and upstream/original PR activity
+  remain separately tracked; PR creation stays deferred by user instruction.
+
 ## Final independent verification — 2026-09-27 (PRs deferred by instruction)
 
 - Rareities/rclone `codex/luna-engine-final` is verified at
@@ -13,11 +28,9 @@
 - Independent core rerun with Go 1.26.8 and `-mod=readonly` passes `backend/mega`, `cmd/bisync`,
   `fs/sync`, `fs/operations`, `fs/accounting`, and `fs/cache`. Full `go vet -mod=readonly ./...`
   passes.
-- The complete `go test -short -mod=readonly ./...` run exits 1. Preserved causes are missing
-  Windows test-server init scripts for FTP/HDFS/SFTP/SIA/SMB/Swift/WebDAV, missing executable
-  `echo`/in-place POSIX `sort` support for `fs/config` and `fs/logger`, and a WebDAV range fixture
-  that does not honor the requested range. These are test-environment limitations and remain
-  unresolved evidence; they are not reported as passes and no production workaround was added.
+- The prior complete `go test -short -mod=readonly ./...` run exited 1. Its Unix-helper and
+  WebDAV-range observations were repaired at the test layer by the correction above; the final
+  run still exits 1 only for the unavailable Windows test-server init scripts listed above.
 - WP07/WP09 remain partial: core Bisync/root-guard slices pass, but worker drain, Proton
   auth/refresh ownership, official-client interoperability and live disposable Proton tests are
   open or **NOT RUN**. Samsung/device, race, multi-process, and release acceptance remain
