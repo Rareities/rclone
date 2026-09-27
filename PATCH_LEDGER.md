@@ -1,5 +1,20 @@
 # Rareities/rclone patch ledger
 
+## Latest cross-repository checkpoint — 2026-09-27 (no new engine source)
+
+- CloudBridge implementation commit `da38fdd47023c347a19c3db30fa96f0a172c0484` now
+  verifies that its Bisync preview capability table matches the exact engine pin
+  `cf3ad40d29d15919af116a5d1e64e0381e2ce3fd`. The app's 489-test-per-flavor JVM sweep,
+  lint, Android-test source compilation and debug packaging pass locally. This is linkage
+  evidence only; it does not promote the engine or close rclone WP gates.
+- Rareities/rclone source remains unchanged at its fork-only branch and PR ledger state.
+  Focused engine tests and vet pass, while the Windows full short suite remains **NOT PASS**
+  because the required test-server fixtures and WebDAV range harness are unavailable or
+  failing. go-mega/Proton candidates remain non-promoted; Samsung, live Proton, race,
+  cross-platform, hosted release signing and release acceptance remain **NOT RUN/NO-GO**.
+- No upstream/original PR was created or updated. The rclone fork-only draft review remains
+  the only engine review boundary.
+
 ## Current cross-repository verification checkpoint — 2026-09-27 (no new engine source)
 
 - The current CloudBridge pass did not alter Rareities/rclone source or its immutable app
