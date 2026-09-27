@@ -4,7 +4,7 @@
 
 - The current CloudBridge pass did not alter Rareities/rclone source or its immutable app
   pin. The fork branch remains `codex/luna-engine-final` at
-  `6533d01df0a6395833d6910938e2d1fa97628ea7d`; CloudBridge continues to build against
+  `cf4e787f7dbd8d2b01c86cdfb1f7577f00decb67`; CloudBridge continues to build against
   exact source `cf3ad40d29d15919af116a5d1e64e0381e2ce3fd`.
 - Existing Go 1.26.8 Windows/amd64 evidence remains valid for the unchanged branch:
   focused `backend/mega`, `cmd/bisync`, `fs/sync`, `fs/operations`, `fs/accounting` and
@@ -15,8 +15,9 @@
   harness-limited cases are not converted to skips or claimed as acceptance.
 - The go-mega candidate remains a supporting, non-promoted dependency; race/live-MEGA,
   cross-platform, Proton/provider, Samsung/device, hosted-CI, signing and release gates are
-  **NOT RUN/NO-GO**. No upstream/original PR is created or updated; the user's PR hold remains
-  in force until all coding, documentation and verification work is complete.
+  **NOT RUN/NO-GO**. The fork-only draft review is open at
+  https://github.com/Rareities/rclone/pull/2; no upstream/original PR is created or updated.
+  Merge and release remain gated by the unresolved evidence above.
 
 ## Windows test portability correction — 2026-09-27 (PRs deferred by instruction)
 
