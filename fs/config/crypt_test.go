@@ -8,6 +8,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"runtime"
 	"testing"
 
 	"github.com/rclone/rclone/fs"
@@ -15,6 +16,19 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
+
+// passwordCommand keeps these tests independent of a Unix-only echo executable.
+// The production command parser still receives an argv-style command, while the
+// test remains runnable on the Windows CI host as well as Unix.
+func passwordCommand(value string) fs.SpaceSepList {
+	if runtime.GOOS == "windows" {
+		if value == "" {
+			return fs.SpaceSepList{"cmd", "/d", "/c", "exit", "0"}
+		}
+		return fs.SpaceSepList{"cmd", "/d", "/c", "echo", value}
+	}
+	return fs.SpaceSepList{"echo", value}
+}
 
 func TestConfigLoadEncrypted(t *testing.T) {
 	var err error
@@ -48,7 +62,7 @@ func TestConfigLoadEncryptedWithValidPassCommand(t *testing.T) {
 	oldConfig := *ci
 	assert.NoError(t, config.SetConfigPath("./testdata/encrypted.conf"))
 	// using ci.PasswordCommand, correct password
-	ci.PasswordCommand = fs.SpaceSepList{"echo", "asdf"}
+	ci.PasswordCommand = passwordCommand("asdf")
 	defer func() {
 		assert.NoError(t, config.SetConfigPath(oldConfigPath))
 		config.ClearConfigPassword()
@@ -91,7 +105,7 @@ func TestConfigLoadEncryptedWithPassCommandAndDaemon(t *testing.T) {
 	}()
 
 	// The parent reads the password and saves the key for the daemon.
-	ci.PasswordCommand = fs.SpaceSepList{"echo", "asdf"}
+	ci.PasswordCommand = passwordCommand("asdf")
 	config.ClearConfigPassword()
 	require.NoError(t, config.Data().Load())
 
@@ -103,7 +117,7 @@ func TestConfigLoadEncryptedWithPassCommandAndDaemon(t *testing.T) {
 	// The daemon inherits the environment but not the key. Running
 	// --password-command again would yield this wrong password.
 	config.ClearConfigPassword()
-	ci.PasswordCommand = fs.SpaceSepList{"echo", "not-the-password"}
+	ci.PasswordCommand = passwordCommand("not-the-password")
 	require.NoError(t, config.Data().Load())
 
 	assert.Equal(t, []string{"nounc", "unc"}, config.Data().GetSectionList())
@@ -119,7 +133,7 @@ func TestConfigLoadEncryptedWithInvalidPassCommand(t *testing.T) {
 	oldConfig := *ci
 	assert.NoError(t, config.SetConfigPath("./testdata/encrypted.conf"))
 	// using ci.PasswordCommand, incorrect password
-	ci.PasswordCommand = fs.SpaceSepList{"echo", "asdf-blurfl"}
+	ci.PasswordCommand = passwordCommand("asdf-blurfl")
 	defer func() {
 		assert.NoError(t, config.SetConfigPath(oldConfigPath))
 		config.ClearConfigPassword()
@@ -170,13 +184,13 @@ func TestGetPasswordCommand(t *testing.T) {
 	assert.Equal(t, "", pass)
 
 	// With password - happy path
-	ci.PasswordCommand = fs.SpaceSepList{"echo", "asdf"}
+	ci.PasswordCommand = passwordCommand("asdf")
 	pass, err = config.GetPasswordCommand(ctx)
 	require.NoError(t, err)
 	assert.Equal(t, "asdf", pass)
 
 	// Empty password returned
-	ci.PasswordCommand = fs.SpaceSepList{"echo", ""}
+	ci.PasswordCommand = passwordCommand("")
 	_, err = config.GetPasswordCommand(ctx)
 	assert.ErrorContains(t, err, "returned empty string")
 
