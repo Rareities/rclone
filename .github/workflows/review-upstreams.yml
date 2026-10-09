@@ -49,6 +49,7 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
+          git -c http.extraheader="AUTHORIZATION: basic $(printf 'x-access-token:%s' "$GH_TOKEN" | base64 -w0)" fetch origin +refs/heads/automation/review-official-rclone:refs/remotes/origin/automation/review-official-rclone || true
           git -c http.extraheader="AUTHORIZATION: basic $(printf 'x-access-token:%s' "$GH_TOKEN" | base64 -w0)" push --force-with-lease origin HEAD:refs/heads/automation/review-official-rclone
           existing="$(gh pr list --head automation/review-official-rclone --base master --state open --json number --jq '.[0].number // empty')"
           if [ -z "$existing" ]; then
@@ -85,6 +86,7 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
+          git -c http.extraheader="AUTHORIZATION: basic $(printf 'x-access-token:%s' "$GH_TOKEN" | base64 -w0)" fetch origin +refs/heads/automation/review-oss-protondrive:refs/remotes/origin/automation/review-oss-protondrive || true
           git -c http.extraheader="AUTHORIZATION: basic $(printf 'x-access-token:%s' "$GH_TOKEN" | base64 -w0)" push --force-with-lease origin HEAD:refs/heads/automation/review-oss-protondrive
           existing="$(gh pr list --head automation/review-oss-protondrive --base master --state open --json number --jq '.[0].number // empty')"
           if [ -z "$existing" ]; then
