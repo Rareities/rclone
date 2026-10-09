@@ -1,0 +1,55 @@
+name: Audit OSS-Singularity differences
+
+on:
+  push:
+    branches:
+      - audit/oss-proton-integration
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  compare:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Compare Forgejo fork against official rclone
+        shell: bash
+        run: |
+          set -euo pipefail
+          git remote add official https://github.com/rclone/rclone.git
+          git remote add oss https://oss-oo.io/OSS-Singularity/rclone.git
+          git fetch --no-tags official master
+          ref="$(git ls-remote --symref oss HEAD | awk '$1=="ref:" && $3=="HEAD" {print $2; exit}')"
+          test -n "$ref"
+          git fetch --no-tags oss "$ref"
+          official="$(git rev-parse official/master)"
+          oss="$(git rev-parse FETCH_HEAD)"
+          echo "=== HEADS ==="
+          echo "Official: $official"
+          echo "OSS: $oss"
+          echo "OSS branch: $ref"
+          echo "=== COMMON ANCESTOR ==="
+          git merge-base "$official" "$oss" || true
+          echo "=== AHEAD/BEHIND ==="
+          git rev-list --left-right --count "$official...$oss"
+          echo "=== OSS-ONLY COMMITS (ALL PATHS, PATCH-ID FILTERED) ==="
+          git log --right-only --cherry-pick --no-merges --format='%h %s' "$official...$oss" | head -n 120 || true
+          echo "=== OSS-ONLY PROTON COMMITS (PATCH-ID FILTERED) ==="
+          git log --right-only --cherry-pick --no-merges --format='%H %s' "$official...$oss" -- backend/protondrive
+          echo "=== OSS-ONLY PROTON-RELATED COMMITS BY MESSAGE ==="
+          git log --right-only --cherry-pick --no-merges --format='%H %s' "$official...$oss" --regexp-ignore-case --grep='proton' --grep='drive' | head -n 150 || true
+          echo "=== PROTON TREE DIFFERENCE BETWEEN LATEST HEADS ==="
+          git diff --stat "$official" "$oss" -- backend/protondrive
+          echo "=== OSS CHANGES SINCE COMMON ANCESTOR ==="
+          git diff --stat "$official...$oss" -- backend/protondrive
+          echo "=== CHANGED PROTON FILES ==="
+          git diff --name-status "$official" "$oss" -- backend/protondrive
+          echo "=== OSS MOST RECENT BACKEND COMMITS ==="
+          git log -n 25 --format='%h %s' "$oss" -- backend/protondrive
+          echo "=== AUDIT END ==="
