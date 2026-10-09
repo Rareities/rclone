@@ -1,0 +1,30 @@
+name: Verify custom rclone Proton integration
+
+on:
+  pull_request:
+    branches:
+      - master
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  proton-and-bisync:
+    if: github.repository == 'Rareities/rclone'
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Unit tests
+        env:
+          GOFLAGS: '-mod=readonly'
+        run: go test ./backend/protondrive/... ./cmd/bisync/...
+      - name: Build CLI
+        env:
+          GOFLAGS: '-mod=readonly'
+        run: go build .
