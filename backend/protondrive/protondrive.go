@@ -3,12 +3,14 @@ package protondrive
 
 import (
 	"context"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"io"
 	"path"
 	"regexp"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/coreos/go-semver/semver"
@@ -55,9 +57,8 @@ var (
 	errCanNotPurgeRootDirectory        = errors.New("can't purge root directory")
 	protonDriveInvalidVersionChars     = regexp.MustCompile(`[^0-9A-Za-z.+-]+`)
 
-	// for the auth/deauth handler
-	_mapper        configmap.Mapper
-	_saltedKeyPass string
+	// Configuration mappers can be shared by independently initialized sessions.
+	configAuthMu sync.Mutex
 )
 
 // Register with Fs
@@ -315,6 +316,12 @@ func (f *Fs) sanitizePath(_path string) string {
 }
 
 func getConfigMap(m configmap.Mapper) (uid, accessToken, refreshToken, saltedKeyPass string, ok bool) {
+	configAuthMu.Lock()
+	defer configAuthMu.Unlock()
+	return getConfigMapLocked(m)
+}
+
+func getConfigMapLocked(m configmap.Mapper) (uid, accessToken, refreshToken, saltedKeyPass string, ok bool) {
 	if accessToken, ok = m.Get(clientAccessTokenKey); !ok {
 		return
 	}
@@ -330,7 +337,6 @@ func getConfigMap(m configmap.Mapper) (uid, accessToken, refreshToken, saltedKey
 	if saltedKeyPass, ok = m.Get(clientSaltedKeyPassKey); !ok {
 		return
 	}
-	_saltedKeyPass = saltedKeyPass
 
 	// empty strings are considered "ok" by m.Get, which is not true business-wise
 	ok = accessToken != "" && uid != "" && refreshToken != "" && saltedKeyPass != ""
@@ -338,27 +344,60 @@ func getConfigMap(m configmap.Mapper) (uid, accessToken, refreshToken, saltedKey
 	return
 }
 
-func setConfigMap(m configmap.Mapper, uid, accessToken, refreshToken, saltedKeyPass string) {
-	m.Set(clientUIDKey, uid)
-	m.Set(clientAccessTokenKey, accessToken)
-	m.Set(clientRefreshTokenKey, refreshToken)
-	m.Set(clientSaltedKeyPassKey, saltedKeyPass)
-	_saltedKeyPass = saltedKeyPass
+type configAuthHooks struct {
+	m                                             configmap.Mapper
+	uid, accessToken, refreshToken, saltedKeyPass string
 }
 
-func clearConfigMap(m configmap.Mapper) {
-	setConfigMap(m, "", "", "", "")
-	_saltedKeyPass = ""
+func newConfigAuthHooks(m configmap.Mapper) *configAuthHooks {
+	configAuthMu.Lock()
+	defer configAuthMu.Unlock()
+	uid, access, refresh, salted, _ := getConfigMapLocked(m)
+	return &configAuthHooks{m: m, uid: uid, accessToken: access, refreshToken: refresh, saltedKeyPass: salted}
 }
 
-func authHandler(auth proton.Auth) {
-	// fs.Debugf("authHandler called")
-	setConfigMap(_mapper, auth.UID, auth.AccessToken, auth.RefreshToken, _saltedKeyPass)
+func (h *configAuthHooks) matchesLocked() bool {
+	uid, access, refresh, salted, _ := getConfigMapLocked(h.m)
+	return uid == h.uid && access == h.accessToken && refresh == h.refreshToken && salted == h.saltedKeyPass
 }
 
-func deAuthHandler() {
-	// fs.Debugf("deAuthHandler called")
-	clearConfigMap(_mapper)
+func (h *configAuthHooks) storeLocked(uid, access, refresh, salted string) {
+	h.m.Set(clientUIDKey, uid)
+	h.m.Set(clientAccessTokenKey, access)
+	h.m.Set(clientRefreshTokenKey, refresh)
+	h.m.Set(clientSaltedKeyPassKey, salted)
+	h.uid, h.accessToken, h.refreshToken, h.saltedKeyPass = uid, access, refresh, salted
+}
+
+func (h *configAuthHooks) auth(auth proton.Auth) {
+	configAuthMu.Lock()
+	defer configAuthMu.Unlock()
+	// First login supplies the salted key only after initialization completes.
+	if h.saltedKeyPass != "" && h.matchesLocked() {
+		h.storeLocked(auth.UID, auth.AccessToken, auth.RefreshToken, h.saltedKeyPass)
+	}
+}
+
+func (h *configAuthHooks) deauth() {
+	configAuthMu.Lock()
+	defer configAuthMu.Unlock()
+	// A stale session must not erase credentials saved by another session.
+	if h.matchesLocked() {
+		h.storeLocked("", "", "", "")
+	}
+}
+
+func (h *configAuthHooks) firstLogin(uid, access, refresh, salted string) {
+	configAuthMu.Lock()
+	defer configAuthMu.Unlock()
+	if h.matchesLocked() {
+		h.storeLocked(uid, access, refresh, salted)
+	}
+}
+
+func cachedLoginRejected(err error) bool {
+	var apiErr *proton.APIError
+	return errors.As(err, &apiErr) && apiErr.Status == 401
 }
 
 func protonDriveAppVersionFromRcloneVersion(version string) string {
@@ -480,8 +519,9 @@ func newProtonDrive(ctx context.Context, f *Fs, opt *Options, m configmap.Mapper
 	config.EnableCaching = opt.EnableCaching
 
 	// let's see if we have the cached access credential
-	uid, accessToken, refreshToken, saltedKeyPass, hasUseReusableLoginCredentials := getConfigMap(m)
-	_saltedKeyPass = saltedKeyPass
+	hooks := newConfigAuthHooks(m)
+	uid, accessToken, refreshToken, saltedKeyPass := hooks.uid, hooks.accessToken, hooks.refreshToken, hooks.saltedKeyPass
+	hasUseReusableLoginCredentials := uid != "" && accessToken != "" && refreshToken != "" && saltedKeyPass != ""
 
 	if hasUseReusableLoginCredentials {
 		fs.Debugf(f, "Has cached credentials")
@@ -492,15 +532,13 @@ func newProtonDrive(ctx context.Context, f *Fs, opt *Options, m configmap.Mapper
 		config.ReusableCredential.RefreshToken = refreshToken
 		config.ReusableCredential.SaltedKeyPass = saltedKeyPass
 
-		protonDrive /* credential will be nil since access credentials are passed in */, _, err := protonDriveAPI.NewProtonDrive(ctx, config, authHandler, deAuthHandler)
+		protonDrive /* credential will be nil since access credentials are passed in */, _, err := protonDriveAPI.NewProtonDrive(ctx, config, hooks.auth, hooks.deauth)
 		if err != nil {
-			fs.Debugf(f, "Cached credential doesn't work, clearing and using the fallback login method")
-			// clear the access token on failure
-			clearConfigMap(m)
-
-			fs.Debugf(f, "couldn't initialize a new proton drive instance using cached credentials: %v", err)
-			// we fallback to username+password login -> don't throw an error here
-			// return nil, fmt.Errorf("couldn't initialize a new proton drive instance: %w", err)
+			if !cachedLoginRejected(err) {
+				return nil, fmt.Errorf("couldn't initialize Proton Drive using cached credentials: %w", err)
+			}
+			hooks.deauth()
+			fs.Debugf(f, "Cached session rejected; using password login")
 		} else {
 			fs.Debugf(f, "Used cached credential to initialize the ProtonDrive API")
 			return protonDrive, nil
@@ -510,6 +548,8 @@ func newProtonDrive(ctx context.Context, f *Fs, opt *Options, m configmap.Mapper
 	// if not, let's try to log the user in using username and password (and 2FA if required)
 	fs.Debugf(f, "Using username and password to log in")
 	config.UseReusableLogin = false
+	// Failed cached clients retain their own callback generation.
+	hooks = newConfigAuthHooks(m)
 	config.FirstLoginCredential.Username = opt.Username
 	config.FirstLoginCredential.Password = opt.Password
 	config.FirstLoginCredential.MailboxPassword = opt.MailboxPassword
@@ -522,13 +562,13 @@ func newProtonDrive(ctx context.Context, f *Fs, opt *Options, m configmap.Mapper
 		}
 		config.FirstLoginCredential.TwoFA = code
 	}
-	protonDrive, auth, err := protonDriveAPI.NewProtonDrive(ctx, config, authHandler, deAuthHandler)
+	protonDrive, auth, err := protonDriveAPI.NewProtonDrive(ctx, config, hooks.auth, hooks.deauth)
 	if err != nil {
 		return nil, fmt.Errorf("couldn't initialize a new proton drive instance: %w", err)
 	}
 
 	fs.Debugf(f, "Used username and password to initialize the ProtonDrive API")
-	setConfigMap(m, auth.UID, auth.AccessToken, auth.RefreshToken, auth.SaltedKeyPass)
+	hooks.firstLogin(auth.UID, auth.AccessToken, auth.RefreshToken, auth.SaltedKeyPass)
 
 	return protonDrive, nil
 }
@@ -536,7 +576,6 @@ func newProtonDrive(ctx context.Context, f *Fs, opt *Options, m configmap.Mapper
 // NewFs constructs an Fs from the path, container:path
 func NewFs(ctx context.Context, name, root string, m configmap.Mapper) (fs.Fs, error) {
 	// pacer is not used in NewFs()
-	_mapper = m
 
 	// Parse config into Options struct
 	opt := new(Options)
@@ -677,7 +716,7 @@ func (f *Fs) getObjectLink(ctx context.Context, remote string) (*proton.Link, er
 
 	var link *proton.Link
 	if err = f.pacer.Call(func() (bool, error) {
-		link, err = f.protonDrive.SearchByNameInActiveFolderByID(ctx, folderLinkID, leaf, true, false, proton.LinkStateActive)
+		link, err = f.searchByName(ctx, folderLinkID, leaf, false)
 		return shouldRetry(ctx, err)
 	}); err != nil {
 		return nil, err
@@ -687,6 +726,33 @@ func (f *Fs) getObjectLink(ctx context.Context, remote string) (*proton.Link, er
 	}
 
 	return link, nil
+}
+
+// searchByName uses authenticated decrypted names when the legacy name hash misses.
+func (f *Fs) searchByName(ctx context.Context, parentID, name string, folder bool) (*proton.Link, error) {
+	link, err := f.protonDrive.SearchByNameInActiveFolderByID(ctx, parentID, name, !folder, folder, proton.LinkStateActive)
+	if err != nil || link != nil {
+		return link, err
+	}
+	entries, err := f.protonDrive.ListDirectory(ctx, parentID)
+	if err != nil {
+		return nil, err
+	}
+	return findNamedLink(entries, name, folder)
+}
+
+func findNamedLink(entries []*protonDriveAPI.ProtonDirectoryData, name string, folder bool) (*proton.Link, error) {
+	var found *proton.Link
+	for _, entry := range entries {
+		if entry == nil || entry.Link == nil || entry.Link.State != proton.LinkStateActive || entry.IsFolder != folder || entry.Name != name {
+			continue
+		}
+		if found != nil && found.LinkID != entry.Link.LinkID {
+			return nil, errors.New("ambiguous Proton Drive name")
+		}
+		found = entry.Link
+	}
+	return found, nil
 }
 
 // readMetaDataForLink reads the metadata from the remote
@@ -723,7 +789,13 @@ func (f *Fs) newObjectWithLink(ctx context.Context, remote string, link *proton.
 	if err != nil {
 		return nil, err
 	}
+	if fileSystemAttrs == nil && f.opt.ReportOriginalSize {
+		return nil, errors.New("plaintext revision metadata unavailable")
+	}
 	if fileSystemAttrs != nil {
+		if fileSystemAttrs.Size < 0 {
+			return nil, errors.New("invalid plaintext revision size")
+		}
 		o.modTime = fileSystemAttrs.ModificationTime
 		o.originalSize = &fileSystemAttrs.Size
 		o.blockSizes = fileSystemAttrs.BlockSizes
@@ -799,7 +871,7 @@ func (f *Fs) FindLeaf(ctx context.Context, pathID, leaf string) (string, bool, e
 	var link *proton.Link
 	var err error
 	if err = f.pacer.Call(func() (bool, error) {
-		link, err = f.protonDrive.SearchByNameInActiveFolderByID(ctx, pathID, leaf, false, true, proton.LinkStateActive)
+		link, err = f.searchByName(ctx, pathID, leaf, true)
 		return shouldRetry(ctx, err)
 	}); err != nil {
 		return "", false, err
@@ -997,7 +1069,7 @@ func (o *Object) Hash(ctx context.Context, t hash.Type) (string, error) {
 	}
 
 	if o.digests != nil {
-		return strings.ToLower(*o.digests), nil
+		return plaintextSHA1(*o.digests)
 	}
 
 	// sha1 not cached: we fetch and try to obtain the sha1 of the link
@@ -1007,10 +1079,17 @@ func (o *Object) Hash(ctx context.Context, t hash.Type) (string, error) {
 	}
 
 	if fileSystemAttrs == nil || fileSystemAttrs.Digests == "" {
-		fs.Debugf(o, "file sha1 digest missing")
-		return "", nil
+		return "", errors.New("plaintext SHA1 digest unavailable")
 	}
-	return fileSystemAttrs.Digests, nil
+	return plaintextSHA1(fileSystemAttrs.Digests)
+}
+
+func plaintextSHA1(digest string) (string, error) {
+	decoded, err := hex.DecodeString(digest)
+	if err != nil || len(decoded) != 20 {
+		return "", errors.New("plaintext SHA1 digest unavailable or invalid")
+	}
+	return strings.ToLower(digest), nil
 }
 
 // Size returns the size of an object in bytes
@@ -1023,6 +1102,7 @@ func (o *Object) Size() int64 {
 		}
 
 		fs.Debugf(o, "Original file size missing")
+		return -1
 	}
 	return o.size
 }
@@ -1047,6 +1127,13 @@ func (o *Object) Storable() bool {
 
 // Open opens the file for read.  Call Close() on the returned io.ReadCloser
 func (o *Object) Open(ctx context.Context, options ...fs.OpenOption) (io.ReadCloser, error) {
+	if o.fs.opt.ReportOriginalSize && o.originalSize == nil {
+		for _, option := range options {
+			if _, ok := option.(*fs.RangeOption); ok {
+				return nil, errors.New("cannot range-read without plaintext size metadata")
+			}
+		}
+	}
 	fs.FixRangeOption(options, o.Size())
 	var offset, limit int64 = 0, -1
 	for _, option := range options { // if the caller passes in nil for options, it will become array of nil
@@ -1080,17 +1167,14 @@ func (o *Object) Open(ctx context.Context, options ...fs.OpenOption) (io.ReadClo
 		o.digests = &fileSystemAttrs.Digests
 		o.blockSizes = fileSystemAttrs.BlockSizes
 	} else {
-		fs.Debugf(o, "fileSystemAttrs is nil: using fallback size, and now digests and blocksizes available")
-		o.originalSize = &sizeOnServer
+		fs.Debugf(o, "Plaintext revision metadata missing")
+		o.originalSize = nil
 		o.size = sizeOnServer
 		o.digests = nil
 		o.blockSizes = nil
 	}
 
-	retReader := io.NopCloser(reader) // the NewLimitedReadCloser will deal with the limit
-
-	// deal with limit
-	return readers.NewLimitedReadCloser(retReader, limit), nil
+	return readers.NewLimitedReadCloser(reader, limit), nil
 }
 
 // Update in to the object with the modTime given of the given size
@@ -1118,6 +1202,10 @@ func (o *Object) Update(ctx context.Context, in io.Reader, src fs.ObjectInfo, op
 		return shouldRetry(ctx, err)
 	}); err != nil {
 		return err
+	}
+
+	if fileSystemAttrs == nil {
+		return errors.New("upload succeeded without plaintext revision metadata; verify remote before retrying")
 	}
 
 	var sha1Hash string
