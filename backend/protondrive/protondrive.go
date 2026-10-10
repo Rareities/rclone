@@ -3,15 +3,21 @@ package protondrive
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/hex"
 	"errors"
 	"fmt"
 	"io"
+	"os"
 	"path"
+	"path/filepath"
 	"regexp"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/gofrs/flock"
 
 	"github.com/coreos/go-semver/semver"
 	protonDriveAPI "github.com/rclone/Proton-API-Bridge"
@@ -46,10 +52,11 @@ const (
 	maxSleep      = 2 * time.Second
 	decayConstant = 2 // bigger for slower decay, exponential
 
-	clientUIDKey           = "client_uid"
-	clientAccessTokenKey   = "client_access_token"
-	clientRefreshTokenKey  = "client_refresh_token"
-	clientSaltedKeyPassKey = "client_salted_key_pass"
+	clientUIDKey             = "client_uid"
+	clientAccessTokenKey     = "client_access_token"
+	clientRefreshTokenKey    = "client_refresh_token"
+	clientSaltedKeyPassKey   = "client_salted_key_pass"
+	clientTokenGenerationKey = "client_token_generation"
 )
 
 var (
@@ -164,22 +171,8 @@ size, will fail to operate properly`,
 			every API request; the option itself is optional.`,
 			Advanced: true,
 		}, {
-			Name: "replace_existing_draft",
-			Help: `Create a new revision when filename conflict is detected
-
-When a file upload is cancelled or failed before completion, a draft will be 
-created and the subsequent upload of the same file to the same location will be 
-reported as a conflict.
-
-The value can also be set by --protondrive-replace-existing-draft=true
-
-If the option is set to true, the draft will be replaced and then the upload 
-operation will restart. If there are other clients also uploading at the same 
-file location at the same time, the behavior is currently unknown. Need to set 
-to true for integration tests.
-If the option is set to false, an error "a draft exist - usually this means a 
-file is being uploaded at another client, or, there was a failed upload attempt" 
-will be returned, and no upload will happen.`,
+			Name:     "replace_existing_draft",
+			Help:     `Reserved for compatibility. Draft replacement is disabled because draft ownership cannot be verified. Unknown drafts must be resolved through the official client. Never removes committed file history.`,
 			Advanced: true,
 			Default:  false,
 		}, {
@@ -347,31 +340,145 @@ func getConfigMapLocked(m configmap.Mapper) (uid, accessToken, refreshToken, sal
 type configAuthHooks struct {
 	m                                             configmap.Mapper
 	uid, accessToken, refreshToken, saltedKeyPass string
+	generation                                    uint64
+	credentialGeneration                          [32]byte
+	persistentName, guardPath                     string
+	persistErr                                    error
 }
 
-func newConfigAuthHooks(m configmap.Mapper) *configAuthHooks {
+func newConfigAuthHooks(m configmap.Mapper, names ...string) *configAuthHooks {
+	h := &configAuthHooks{m: m}
+	if len(names) > 0 {
+		if _, mapped := m.(*configmap.Map); mapped && config.LoadedData().HasSection(names[0]) {
+			h.persistentName = names[0]
+			if info, err := os.Stat(config.GetConfigPath()); err == nil && info.Mode().IsRegular() {
+				canonical, canonicalErr := filepath.EvalSymlinks(config.GetConfigPath())
+				if canonicalErr != nil {
+					h.persistErr = canonicalErr
+					return h
+				}
+				canonical, canonicalErr = filepath.Abs(canonical)
+				if canonicalErr != nil {
+					h.persistErr = canonicalErr
+					return h
+				}
+				h.guardPath = canonical + ".proton-auth.guard"
+			}
+		}
+	}
+	unlock, err := h.lock()
+	if err != nil {
+		h.persistErr = err
+		return h
+	}
+	defer unlock()
+	h.uid, h.accessToken, h.refreshToken, h.saltedKeyPass, _ = getConfigMapLocked(m)
+	h.generation = tokenGeneration(m)
+	h.credentialGeneration = credentialGeneration(m)
+	return h
+}
+
+// lock protects coherent token reads and atomic configuration saves across fork processes.
+func (h *configAuthHooks) lock() (func(), error) {
+	configAuthMu.Lock()
+	if h.guardPath == "" {
+		return configAuthMu.Unlock, nil
+	}
+	guard := flock.New(h.guardPath, flock.SetPermissions(0600))
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	locked, err := guard.TryLockContext(ctx, 10*time.Millisecond)
+	if err != nil || !locked {
+		_ = guard.Close()
+		configAuthMu.Unlock()
+		return nil, errors.New("Proton credential coordination is unavailable")
+	}
+	return func() { _ = guard.Unlock(); _ = guard.Close(); configAuthMu.Unlock() }, nil
+}
+
+func (h *configAuthHooks) persistenceError() error {
 	configAuthMu.Lock()
 	defer configAuthMu.Unlock()
-	uid, access, refresh, salted, _ := getConfigMapLocked(m)
-	return &configAuthHooks{m: m, uid: uid, accessToken: access, refreshToken: refresh, saltedKeyPass: salted}
+	return h.persistErr
+}
+
+func (h *configAuthHooks) recordPersistenceError(err error) {
+	configAuthMu.Lock()
+	h.persistErr = err
+	configAuthMu.Unlock()
 }
 
 func (h *configAuthHooks) matchesLocked() bool {
 	uid, access, refresh, salted, _ := getConfigMapLocked(h.m)
-	return uid == h.uid && access == h.accessToken && refresh == h.refreshToken && salted == h.saltedKeyPass
+	return uid == h.uid && access == h.accessToken && refresh == h.refreshToken && salted == h.saltedKeyPass && tokenGeneration(h.m) == h.generation && credentialGeneration(h.m) == h.credentialGeneration
 }
 
 func (h *configAuthHooks) storeLocked(uid, access, refresh, salted string) {
-	h.m.Set(clientUIDKey, uid)
-	h.m.Set(clientAccessTokenKey, access)
-	h.m.Set(clientRefreshTokenKey, refresh)
-	h.m.Set(clientSaltedKeyPassKey, salted)
+	generation := h.generation + 1
+	values := map[string]string{clientUIDKey: uid, clientAccessTokenKey: access, clientRefreshTokenKey: refresh,
+		clientSaltedKeyPassKey: salted, clientTokenGenerationKey: strconv.FormatUint(generation, 10)}
+	if h.persistentName != "" {
+		// SetValue updates memory; one Save installs the complete tuple with the storage's atomic rename.
+		storage := config.LoadedData()
+		for key, value := range values {
+			storage.SetValue(h.persistentName, key, value)
+		}
+		if err := storage.Save(); err != nil {
+			h.persistErr = errors.New("Proton credential persistence failed")
+			fs.Errorf(nil, "Proton credential persistence failed; reconnect may be required")
+			return
+		}
+	} else {
+		for key, value := range values {
+			h.m.Set(key, value)
+		}
+	}
+	h.generation = generation
 	h.uid, h.accessToken, h.refreshToken, h.saltedKeyPass = uid, access, refresh, salted
 }
 
+func tokenGeneration(m configmap.Mapper) uint64 {
+	value, _ := m.Get(clientTokenGenerationKey)
+	generation, _ := strconv.ParseUint(value, 10, 64)
+	return generation
+}
+
+func credentialGeneration(m configmap.Mapper) [32]byte {
+	var values strings.Builder
+	for _, key := range []string{"username", "password", "mailbox_password"} {
+		value, _ := m.Get(key)
+		fmt.Fprintf(&values, "%d:%s", len(value), value)
+	}
+	return sha256.Sum256([]byte(values.String()))
+}
+
+func (h *configAuthHooks) refresh() (uid, access, refresh string, ok bool) {
+	unlock, err := h.lock()
+	if err != nil {
+		h.recordPersistenceError(err)
+		return "", "", "", false
+	}
+	defer unlock()
+	uid, access, refresh, salted, ok := getConfigMapLocked(h.m)
+	generation := tokenGeneration(h.m)
+	if !ok || uid != h.uid || salted != h.saltedKeyPass || credentialGeneration(h.m) != h.credentialGeneration || generation < h.generation {
+		return "", "", "", false
+	}
+	// Only credentials persisted by a later local generation can replace this session.
+	if refresh != h.refreshToken && generation <= h.generation {
+		return "", "", "", false
+	}
+	h.accessToken, h.refreshToken, h.generation = access, refresh, generation
+	return uid, access, refresh, true
+}
+
 func (h *configAuthHooks) auth(auth proton.Auth) {
-	configAuthMu.Lock()
-	defer configAuthMu.Unlock()
+	unlock, err := h.lock()
+	if err != nil {
+		h.recordPersistenceError(err)
+		return
+	}
+	defer unlock()
 	// First login supplies the salted key only after initialization completes.
 	if h.saltedKeyPass != "" && h.matchesLocked() {
 		h.storeLocked(auth.UID, auth.AccessToken, auth.RefreshToken, h.saltedKeyPass)
@@ -379,20 +486,34 @@ func (h *configAuthHooks) auth(auth proton.Auth) {
 }
 
 func (h *configAuthHooks) deauth() {
-	configAuthMu.Lock()
-	defer configAuthMu.Unlock()
+	unlock, err := h.lock()
+	if err != nil {
+		h.recordPersistenceError(err)
+		return
+	}
+	defer unlock()
 	// A stale session must not erase credentials saved by another session.
 	if h.matchesLocked() {
 		h.storeLocked("", "", "", "")
 	}
 }
 
+// refreshRejected preserves credentials: a spent-token rejection cannot prove session revocation.
+// A slower competing winner may still be about to persist its rotation.
+func (h *configAuthHooks) refreshRejected() {}
+
 func (h *configAuthHooks) firstLogin(uid, access, refresh, salted string) {
-	configAuthMu.Lock()
-	defer configAuthMu.Unlock()
-	if h.matchesLocked() {
-		h.storeLocked(uid, access, refresh, salted)
+	unlock, err := h.lock()
+	if err != nil {
+		h.recordPersistenceError(err)
+		return
 	}
+	defer unlock()
+	if !h.matchesLocked() {
+		h.persistErr = errors.New("Proton configuration changed during login; retry with current configuration")
+		return
+	}
+	h.storeLocked(uid, access, refresh, salted)
 }
 
 func cachedLoginRejected(err error) bool {
@@ -515,11 +636,19 @@ func newProtonDrive(ctx context.Context, f *Fs, opt *Options, m configmap.Mapper
 	// logging system so it honours -v / -vv and --log-file.
 	config.Logger = protonLogger{f: f}
 
-	config.ReplaceExistingDraft = opt.ReplaceExistingDraft
+	if opt.ReplaceExistingDraft {
+		return nil, errors.New("draft replacement is disabled: ownership cannot be verified")
+	}
+	config.ReplaceExistingDraft = false
 	config.EnableCaching = opt.EnableCaching
 
 	// let's see if we have the cached access credential
-	hooks := newConfigAuthHooks(m)
+	hooks := newConfigAuthHooks(m, f.name)
+	if hooks.persistErr != nil {
+		return nil, hooks.persistErr
+	}
+	config.AuthRefreshHook = hooks.refresh
+	config.AuthPersistenceHook = hooks.persistenceError
 	uid, accessToken, refreshToken, saltedKeyPass := hooks.uid, hooks.accessToken, hooks.refreshToken, hooks.saltedKeyPass
 	hasUseReusableLoginCredentials := uid != "" && accessToken != "" && refreshToken != "" && saltedKeyPass != ""
 
@@ -532,7 +661,7 @@ func newProtonDrive(ctx context.Context, f *Fs, opt *Options, m configmap.Mapper
 		config.ReusableCredential.RefreshToken = refreshToken
 		config.ReusableCredential.SaltedKeyPass = saltedKeyPass
 
-		protonDrive /* credential will be nil since access credentials are passed in */, _, err := protonDriveAPI.NewProtonDrive(ctx, config, hooks.auth, hooks.deauth)
+		protonDrive /* credential will be nil since access credentials are passed in */, _, err := protonDriveAPI.NewProtonDrive(ctx, config, hooks.auth, hooks.refreshRejected)
 		if err != nil {
 			if !cachedLoginRejected(err) {
 				return nil, fmt.Errorf("couldn't initialize Proton Drive using cached credentials: %w", err)
@@ -541,6 +670,9 @@ func newProtonDrive(ctx context.Context, f *Fs, opt *Options, m configmap.Mapper
 			fs.Debugf(f, "Cached session rejected; using password login")
 		} else {
 			fs.Debugf(f, "Used cached credential to initialize the ProtonDrive API")
+			if err := hooks.persistenceError(); err != nil {
+				return nil, err
+			}
 			return protonDrive, nil
 		}
 	}
@@ -549,7 +681,12 @@ func newProtonDrive(ctx context.Context, f *Fs, opt *Options, m configmap.Mapper
 	fs.Debugf(f, "Using username and password to log in")
 	config.UseReusableLogin = false
 	// Failed cached clients retain their own callback generation.
-	hooks = newConfigAuthHooks(m)
+	hooks = newConfigAuthHooks(m, f.name)
+	if hooks.persistErr != nil {
+		return nil, hooks.persistErr
+	}
+	config.AuthRefreshHook = hooks.refresh
+	config.AuthPersistenceHook = hooks.persistenceError
 	config.FirstLoginCredential.Username = opt.Username
 	config.FirstLoginCredential.Password = opt.Password
 	config.FirstLoginCredential.MailboxPassword = opt.MailboxPassword
@@ -562,13 +699,16 @@ func newProtonDrive(ctx context.Context, f *Fs, opt *Options, m configmap.Mapper
 		}
 		config.FirstLoginCredential.TwoFA = code
 	}
-	protonDrive, auth, err := protonDriveAPI.NewProtonDrive(ctx, config, hooks.auth, hooks.deauth)
+	protonDrive, auth, err := protonDriveAPI.NewProtonDrive(ctx, config, hooks.auth, hooks.refreshRejected)
 	if err != nil {
 		return nil, fmt.Errorf("couldn't initialize a new proton drive instance: %w", err)
 	}
 
 	fs.Debugf(f, "Used username and password to initialize the ProtonDrive API")
 	hooks.firstLogin(auth.UID, auth.AccessToken, auth.RefreshToken, auth.SaltedKeyPass)
+	if err := hooks.persistenceError(); err != nil {
+		return nil, err
+	}
 
 	return protonDrive, nil
 }

@@ -285,3 +285,8 @@ require (
 	golang.org/x/mobile v0.0.0-20260709172247-6129f5bee9d5
 	golang.org/x/term v0.46.0
 )
+
+// Reviewed Proton patches are contained in this fork until upstream release adoption.
+replace github.com/rclone/go-proton-api => ./third_party/go-proton-api
+
+replace github.com/rclone/Proton-API-Bridge => ./third_party/Proton-API-Bridge

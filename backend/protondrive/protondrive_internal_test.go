@@ -205,3 +205,32 @@ func TestDelayedCachedSessionDeauthPreservesFreshLogin(t *testing.T) {
 	assert.Equal(t, "fresh-access", m[clientAccessTokenKey])
 	assert.Equal(t, "fresh-salt", m[clientSaltedKeyPassKey])
 }
+
+func TestRefreshHooksRequireSameIdentityAndNewerGeneration(t *testing.T) {
+	m := configmap.Simple{clientUIDKey: "session", clientAccessTokenKey: "access", clientRefreshTokenKey: "refresh", clientSaltedKeyPassKey: "salt", "username": "alice"}
+	old, current := newConfigAuthHooks(m), newConfigAuthHooks(m)
+	current.auth(proton.Auth{UID: "session", AccessToken: "rotated", RefreshToken: "rotated-refresh"})
+	uid, access, refresh, ok := old.refresh()
+	assert.True(t, ok)
+	assert.Equal(t, "session", uid)
+	assert.Equal(t, "rotated", access)
+	assert.Equal(t, "rotated-refresh", refresh)
+	old.deauth()
+	assert.Empty(t, m[clientAccessTokenKey], "adopted current session can still be revoked")
+	m[clientUIDKey], m[clientAccessTokenKey], m[clientRefreshTokenKey], m[clientSaltedKeyPassKey] = "different", "new", "new", "salt"
+	_, _, _, ok = current.refresh()
+	assert.False(t, ok)
+	m[clientUIDKey] = "session"
+	m["username"] = "bob"
+	_, _, _, ok = current.refresh()
+	assert.False(t, ok, "changed account configuration cannot be adopted")
+}
+
+func TestFirstLoginRejectsConcurrentConfigurationChange(t *testing.T) {
+	m := configmap.Simple{"username": "alice"}
+	stale := newConfigAuthHooks(m)
+	m["username"] = "bob"
+	stale.firstLogin("alice-session", "access", "refresh", "salt")
+	assert.ErrorContains(t, stale.persistenceError(), "configuration changed")
+	assert.Empty(t, m[clientUIDKey])
+}

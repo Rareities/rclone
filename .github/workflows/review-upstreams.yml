@@ -1,96 +1,129 @@
-name: Review official rclone and OSS Proton patches
+name: Review upstream candidates in isolated jobs
 
 on:
   schedule:
     - cron: '17 5 * * *'
   workflow_dispatch:
-    inputs:
-      source:
-        description: Upstream source
-        type: choice
-        options: [both, official, oss]
-        default: both
 
 permissions:
-  contents: write
-  pull-requests: write
+  contents: read
 
 concurrency:
   group: dual-upstream-review
   cancel-in-progress: false
 
 jobs:
-  official:
-    if: github.event_name == 'schedule' || inputs.source == 'both' || inputs.source == 'official'
+  prepare:
     runs-on: ubuntu-latest
-    timeout-minutes: 50
+    timeout-minutes: 20
+    strategy:
+      matrix:
+        source: [official, oss]
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
         with:
           fetch-depth: 0
           persist-credentials: false
-      - name: Prepare candidate without write credentials
-        id: prepare
-        run: bash .github/scripts/review-upstreams.sh official
-      - uses: actions/setup-go@v6
-        if: steps.prepare.outputs.changed == 'true'
+      - name: Prepare candidate without executing candidate code
+        id: candidate
+        env:
+          SOURCE: ${{ matrix.source }}
+        run: |
+          mkdir -p /tmp/intake
+          base=$(git rev-parse HEAD)
+          bash .github/scripts/review-upstreams.sh "$SOURCE"
+          if [ "$(git rev-parse HEAD)" = "$base" ]; then touch /tmp/intake/unchanged; exit 0; fi
+          mkdir -p /tmp/intake
+          git bundle create /tmp/intake/candidate.bundle HEAD "^$base"
+          printf '%s\n' "$base" "$(git rev-parse HEAD)" > /tmp/intake/identity
+          echo 'changed=true' >> "$GITHUB_OUTPUT"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
-          go-version-file: go.mod
-          cache: true
-      - name: Test selected source
-        if: steps.prepare.outputs.changed == 'true'
-        env:
-          GOFLAGS: -mod=readonly
-        run: |
-          go test ./backend/protondrive/... ./cmd/bisync/...
-          go build .
-      - name: Open or update draft PR
-        if: steps.prepare.outputs.changed == 'true'
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          git -c http.extraheader="AUTHORIZATION: basic $(printf 'x-access-token:%s' "$GH_TOKEN" | base64 -w0)" fetch origin +refs/heads/automation/review-official-rclone:refs/remotes/origin/automation/review-official-rclone || true
-          git -c http.extraheader="AUTHORIZATION: basic $(printf 'x-access-token:%s' "$GH_TOKEN" | base64 -w0)" push --force-with-lease origin HEAD:refs/heads/automation/review-official-rclone
-          existing="$(gh pr list --head automation/review-official-rclone --base master --state open --json number --jq '.[0].number // empty')"
-          if [ -z "$existing" ]; then
-            gh pr create --draft --base master --head automation/review-official-rclone --title 'chore: review official rclone master' --body-file /tmp/upstream-pr.md
-          else
-            gh pr edit "$existing" --body-file /tmp/upstream-pr.md
-          fi
-  oss:
-    if: github.event_name == 'schedule' || inputs.source == 'both' || inputs.source == 'oss'
+          name: candidate-${{ matrix.source }}
+          path: /tmp/intake/
+          retention-days: 7
+  test:
+    needs: prepare
     runs-on: ubuntu-latest
     timeout-minutes: 50
+    strategy:
+      matrix:
+        source: [official, oss]
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
         with:
           fetch-depth: 0
           persist-credentials: false
-      - name: Prepare Forgejo Proton candidate without write credentials
-        id: prepare
-        run: bash .github/scripts/review-upstreams.sh oss
-      - uses: actions/setup-go@v6
-        if: steps.prepare.outputs.changed == 'true'
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          name: candidate-${{ matrix.source }}
+          path: /tmp/intake
+      - name: Load candidate
+        id: candidate
+        run: |
+          if [ ! -f /tmp/intake/identity ]; then exit 0; fi
+          mapfile -t identity < /tmp/intake/identity
+          [[ ${identity[0]} =~ ^[0-9a-f]{40}$ && ${identity[1]} =~ ^[0-9a-f]{40}$ ]]
+          git fetch /tmp/intake/candidate.bundle HEAD
+          test "$(git rev-parse FETCH_HEAD)" = "${identity[1]}"
+          git checkout --detach "${identity[1]}"
+          echo 'changed=true' >> "$GITHUB_OUTPUT"
+      - uses: actions/setup-go@d35c59abb061a4a6fb18e82ac0862c26744d6ab5
+        if: steps.candidate.outputs.changed == 'true'
         with:
           go-version-file: go.mod
-          cache: true
-      - name: Test selected source
-        if: steps.prepare.outputs.changed == 'true'
+          cache: false
+      - name: Test with read-only permissions and no publication credentials
+        if: steps.candidate.outputs.changed == 'true'
         env:
           GOFLAGS: -mod=readonly
+          RCLONE_CONFIG: /notfound
         run: |
           go test ./backend/protondrive/... ./cmd/bisync/...
           go build .
-      - name: Open or update draft PR
-        if: steps.prepare.outputs.changed == 'true'
+  publish:
+    needs: [prepare, test]
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+      pull-requests: write
+    strategy:
+      matrix:
+        source: [official, oss]
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          name: candidate-${{ matrix.source }}
+          path: /tmp/intake
+      - name: Publish reviewed proposal without checking out or executing candidate
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          SOURCE: ${{ matrix.source }}
         run: |
-          git -c http.extraheader="AUTHORIZATION: basic $(printf 'x-access-token:%s' "$GH_TOKEN" | base64 -w0)" fetch origin +refs/heads/automation/review-oss-protondrive:refs/remotes/origin/automation/review-oss-protondrive || true
-          git -c http.extraheader="AUTHORIZATION: basic $(printf 'x-access-token:%s' "$GH_TOKEN" | base64 -w0)" push --force-with-lease origin HEAD:refs/heads/automation/review-oss-protondrive
-          existing="$(gh pr list --head automation/review-oss-protondrive --base master --state open --json number --jq '.[0].number // empty')"
+          if [ ! -f /tmp/intake/identity ]; then exit 0; fi
+          mapfile -t identity < /tmp/intake/identity
+          [[ ${identity[0]} =~ ^[0-9a-f]{40}$ && ${identity[1]} =~ ^[0-9a-f]{40}$ ]]
+          git bundle verify /tmp/intake/candidate.bundle
+          git fetch /tmp/intake/candidate.bundle HEAD
+          test "$(git rev-parse FETCH_HEAD)" = "${identity[1]}"
+          git merge-base --is-ancestor "${identity[0]}" "${identity[1]}"
+          case "$SOURCE" in
+            official) branch=automation/review-official-rclone ;;
+            oss) branch=automation/review-oss-protondrive ;;
+            *) exit 2 ;;
+          esac
+          gh auth setup-git
+          expected=$(git ls-remote origin "refs/heads/$branch" | cut -f1)
+          git push --force-with-lease="refs/heads/$branch:$expected" origin "${identity[1]}:refs/heads/$branch"
+          printf 'Review-only %s candidate.\n\nBase: %s\nCandidate: %s\n\nRequires human source review and disposable-data acceptance; never automatically merged.\n' "$SOURCE" "${identity[0]}" "${identity[1]}" > /tmp/body.md
+          existing=$(gh pr list --head "$branch" --base master --state open --json number --jq '.[0].number // empty')
           if [ -z "$existing" ]; then
-            gh pr create --draft --base master --head automation/review-oss-protondrive --title 'chore: review OSS Proton Drive fixes' --body-file /tmp/upstream-pr.md
+            gh pr create --draft --base master --head "$branch" --title "chore: review $SOURCE rclone candidate" --body-file /tmp/body.md
           else
-            gh pr edit "$existing" --body-file /tmp/upstream-pr.md
+            gh pr edit "$existing" --body-file /tmp/body.md
           fi
