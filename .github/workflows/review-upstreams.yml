@@ -80,6 +80,7 @@ jobs:
           RCLONE_CONFIG: /notfound
         run: |
           go test ./backend/protondrive/... ./cmd/bisync/...
+          go test -race github.com/rclone/go-proton-api github.com/rclone/Proton-API-Bridge -run '^Test(Auth|ModernName|MixedLegacyModern|DraftReplacement|NameFixtures|EncryptMessageNonAead|SetEncXAttrStringNonAead|SetNameNonAead)'
           go build .
   publish:
     needs: [prepare, test]

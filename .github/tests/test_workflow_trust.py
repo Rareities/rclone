@@ -32,6 +32,15 @@ class WorkflowTrustTest(unittest.TestCase):
         self.assertIn('git bundle verify', commands)
         self.assertIn('force-with-lease=', commands)
 
+    def test_nested_dependency_fixtures_are_explicitly_executed(self):
+        verification = yaml.safe_load((Path(__file__).parents[1] / 'workflows/verify-proton-integration.yml').read_text())
+        jobs = [self.workflow['jobs']['test'], verification['jobs']['proton-and-bisync']]
+        for job in jobs:
+            commands = '\n'.join(step.get('run', '') for step in job['steps'])
+            self.assertIn('go test -race github.com/rclone/go-proton-api github.com/rclone/Proton-API-Bridge', commands)
+            self.assertIn('MixedLegacyModern', commands)
+            self.assertIn('DraftReplacement', commands)
+
     def test_actions_are_immutable_and_artifacts_come_from_prepare(self):
         for job in self.workflow['jobs'].values():
             for step in job['steps']:
