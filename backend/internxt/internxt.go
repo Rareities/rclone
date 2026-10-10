@@ -57,15 +57,10 @@ func (f *Fs) shouldRetry(ctx context.Context, err error) (bool, error) {
 	if httpErr, ok := errors.AsType[*sdkerrors.HTTPError](err); ok {
 		switch httpErr.StatusCode() {
 		case 401:
-			if !f.authFailed {
-				authErr := f.reAuthorize(ctx)
-				if authErr != nil {
-					fs.Debugf(f, "Re-authorization failed: %v", authErr)
-					return false, err
-				}
-				return true, err
+			if authErr := f.reAuthorize(ctx); authErr != nil {
+				return false, fmt.Errorf("re-authorization failed: %w", authErr)
 			}
-			return false, err
+			return true, err
 		case 429:
 			delay := httpErr.RetryAfter()
 			if delay <= 0 {
@@ -94,6 +89,12 @@ func init() {
 			Help:       "Password.",
 			Required:   true,
 			IsPassword: true,
+		}, {
+			Name:       "totp_secret",
+			Help:       "Optional OTP secret for unattended two-factor reauthentication. Prefer manual reconnect unless unattended login is required.",
+			IsPassword: true,
+			Sensitive:  true,
+			Advanced:   true,
 		}, {
 			Name:      "mnemonic",
 			Help:      "Mnemonic (internal use only)",
@@ -212,6 +213,7 @@ type Options struct {
 	Email              string               `config:"email"`
 	Pass               string               `config:"pass"`
 	TwoFA              string               `config:"2fa"`
+	TOTPSecret         string               `config:"totp_secret"`
 	Mnemonic           string               `config:"mnemonic"`
 	SkipHashValidation bool                 `config:"skip_hash_validation"`
 	UploadCutoff       fs.SizeSuffix        `config:"upload_cutoff"`
@@ -222,19 +224,20 @@ type Options struct {
 
 // Fs represents an Internxt remote
 type Fs struct {
-	name         string
-	root         string
-	opt          Options
-	m            configmap.Mapper
-	dirCache     *dircache.DirCache
-	cfg          *config.Config
-	features     *fs.Features
-	pacer        *fs.Pacer
-	tokenRenewer *oauthutil.Renew
-	bridgeUser   string
-	userID       string
-	authMu       sync.Mutex
-	authFailed   bool
+	name            string
+	root            string
+	opt             Options
+	m               configmap.Mapper
+	dirCache        *dircache.DirCache
+	cfg             *config.Config
+	features        *fs.Features
+	pacer           *fs.Pacer
+	tokenRenewer    *oauthutil.Renew
+	bridgeUser      string
+	userID          string
+	authMu          sync.Mutex
+	authFailCount   int
+	nextAuthAllowed time.Time
 }
 
 // Object holds the data for a remote file object
@@ -391,9 +394,7 @@ func NewFs(ctx context.Context, name, root string, m configmap.Mapper) (fs.Fs, e
 
 	if ts != nil {
 		f.tokenRenewer = oauthutil.NewRenew(f.String(), ts, func() error {
-			f.authMu.Lock()
-			defer f.authMu.Unlock()
-			return f.refreshOrReLogin(ctx)
+			return f.reAuthorize(ctx)
 		})
 		f.tokenRenewer.Start()
 	}

@@ -8,6 +8,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"math/rand/v2"
 	"time"
 
 	"github.com/golang-jwt/jwt/v5"
@@ -17,7 +18,6 @@ import (
 	"github.com/rclone/rclone/fs"
 	"github.com/rclone/rclone/fs/config/configmap"
 	"github.com/rclone/rclone/fs/config/obscure"
-	"github.com/rclone/rclone/fs/fserrors"
 	"github.com/rclone/rclone/fs/fshttp"
 	"github.com/rclone/rclone/lib/oauthutil"
 	"golang.org/x/oauth2"
@@ -62,7 +62,7 @@ func getUserInfo(ctx context.Context, cfg *userInfoConfig) (*userInfo, error) {
 		Bucket:       resp.User.Bucket,
 		BridgeUser:   resp.User.BridgeUser,
 		UserID:       resp.User.UserID,
-		NewToken:     resp.NewToken,
+		NewToken:     responseToken(resp.NewToken, resp.Token),
 	}
 
 	fs.Debugf(nil, "User info: rootFolderId=%s, bucket=%s",
@@ -127,12 +127,13 @@ func refreshJWTToken(ctx context.Context, name string, m configmap.Mapper) error
 		return fmt.Errorf("refresh request failed: %w", err)
 	}
 
-	if resp.NewToken == "" {
+	newToken := responseToken(resp.NewToken, resp.Token)
+	if newToken == "" {
 		return errors.New("refresh response missing newToken")
 	}
 
 	// Convert JWT to oauth2.Token format
-	token, err := jwtToOAuth2Token(resp.NewToken)
+	token, err := jwtToOAuth2Token(newToken)
 	if err != nil {
 		return fmt.Errorf("failed to parse refreshed token: %w", err)
 	}
@@ -167,7 +168,27 @@ func (f *Fs) reLogin(ctx context.Context) (*internxtauth.AccessResponse, error) 
 	}
 
 	if loginResp.TFA {
-		return nil, errors.New("account requires 2FA - please run: rclone config reconnect " + f.name + ":")
+		secret := revealTOTPSecret(f.opt.TOTPSecret)
+		if secret == "" {
+			return nil, errors.New("account requires 2FA - please run: rclone config reconnect " + f.name + ":")
+		}
+		var lastErr error
+		for _, offset := range []int64{0, -1, 1} {
+			code, err := generateTOTPCodeWithOffset(secret, offset)
+			if err != nil {
+				return nil, err
+			}
+			resp, err := internxtauth.DoLogin(ctx, cfg, f.opt.Email, password, code)
+			if err == nil {
+				return resp, nil
+			}
+			var httpErr *sdkerrors.HTTPError
+			if !errors.As(err, &httpErr) || (httpErr.StatusCode() != 401 && httpErr.StatusCode() != 403) {
+				return nil, fmt.Errorf("re-login failed: %w", err)
+			}
+			lastErr = err
+		}
+		return nil, fmt.Errorf("re-login failed in all TOTP windows: %w", lastErr)
 	}
 
 	resp, err := internxtauth.DoLogin(ctx, cfg, f.opt.Email, password, "")
@@ -195,9 +216,6 @@ func (f *Fs) refreshOrReLogin(ctx context.Context) error {
 
 	var httpErr *sdkerrors.HTTPError
 	if !errors.As(refreshErr, &httpErr) || httpErr.StatusCode() != 401 {
-		if fserrors.ShouldRetry(refreshErr) {
-			return refreshErr
-		}
 		return refreshErr
 	}
 
@@ -208,7 +226,7 @@ func (f *Fs) refreshOrReLogin(ctx context.Context) error {
 		return fmt.Errorf("re-login fallback failed: %w", err)
 	}
 
-	oauthToken, err := jwtToOAuth2Token(resp.NewToken)
+	oauthToken, err := jwtToOAuth2Token(responseToken(resp.NewToken, resp.Token))
 	if err != nil {
 		return fmt.Errorf("failed to parse re-login token: %w", err)
 	}
@@ -228,21 +246,52 @@ func (f *Fs) refreshOrReLogin(ctx context.Context) error {
 	return nil
 }
 
-// reAuthorize is called after getting 401 from the server.
-// It serializes re-auth attempts and uses a circuit-breaker to avoid infinite loops.
+func responseToken(newToken, token string) string {
+	if newToken != "" {
+		return newToken
+	}
+	return token
+}
+
+// getBackoffDuration returns a capped delay with up to ten percent jitter.
+func getBackoffDuration(attempt int) time.Duration {
+	base := time.Minute
+	switch attempt {
+	case 2:
+		base = 5 * time.Minute
+	case 3:
+		base = 15 * time.Minute
+	default:
+		if attempt >= 4 {
+			base = time.Hour
+		}
+	}
+	return base - time.Duration(rand.Int64N(int64(base/10)))
+}
+
+// reAuthorize serializes authentication and bounds retries after failures.
 func (f *Fs) reAuthorize(ctx context.Context) error {
+	return f.reAuthorizeWith(ctx, f.refreshOrReLogin, time.Now())
+}
+
+func (f *Fs) reAuthorizeWith(ctx context.Context, authorize func(context.Context) error, now time.Time) error {
 	f.authMu.Lock()
 	defer f.authMu.Unlock()
-
-	if f.authFailed {
-		return errors.New("re-authorization permanently failed")
+	if f.authFailCount >= 5 {
+		return errors.New("auth exceeded max retries: manual re-auth required")
 	}
-
-	err := f.refreshOrReLogin(ctx)
-	if err != nil {
-		f.authFailed = true
+	if now.Before(f.nextAuthAllowed) {
+		return fmt.Errorf("re-authorization blocked until %v (attempt %d/5)", f.nextAuthAllowed, f.authFailCount)
+	}
+	if err := authorize(ctx); err != nil {
+		f.authFailCount++
+		f.nextAuthAllowed = now.Add(getBackoffDuration(f.authFailCount))
+		if f.authFailCount >= 5 {
+			return fmt.Errorf("auth exceeded max retries: manual re-auth required: %w", err)
+		}
 		return err
 	}
-
+	f.authFailCount = 0
+	f.nextAuthAllowed = time.Time{}
 	return nil
 }
