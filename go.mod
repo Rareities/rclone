@@ -287,6 +287,6 @@ require (
 	golang.org/x/term v0.46.0
 )
 
-replace github.com/rclone/go-proton-api => github.com/jomplox/go-proton-api v1.0.5-0.20260907162606-9dcca00ba1dc
+replace github.com/rclone/go-proton-api => ./third_party/go-proton-api
 
 replace github.com/rclone/Proton-API-Bridge => ./third_party/proton-api-bridge

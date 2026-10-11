@@ -54,7 +54,8 @@ type Config struct {
 	// AuthRefreshHook, if non-nil, is registered on the client so that a
 	// session whose refresh token was rotated by another client (or process)
 	// can adopt the newer credentials instead of being de-authed.
-	AuthRefreshHook proton.AuthRefreshHook
+	AuthRefreshHook     proton.AuthRefreshHook
+	AuthPersistenceHook proton.AuthPersistenceHook
 
 	/* Setting */
 	DestructiveIntegrationTest     bool // CAUTION: the integration test requires a clean proton drive

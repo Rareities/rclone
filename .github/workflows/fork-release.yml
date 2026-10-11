@@ -1,0 +1,100 @@
+name: Verified CloudBridge engine release
+
+on:
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: 'Reviewed fork tag with a matching docs/releases changelog'
+        required: true
+        default: 'v1.76.0-cloudbridge.1'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: verified-engine-release
+  cancel-in-progress: false
+
+jobs:
+  validate:
+    if: github.ref == 'refs/heads/master'
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff
+        with:
+          go-version: '1.27.2'
+          cache: false
+      - name: Package and backend regressions
+        run: go test ./backend/protondrive/... ./backend/internxt/... ./cmd/bisync/... ./fs/march/... ./fs/config/configmap ./fs/config/configfile ./backend/local/... ./backend/alias/... ./backend/crypt/... ./backend/memory/... ./cmd/serve/http/... ./cmd/serve/webdav/... -count=1
+      - name: Companion negative crypto and refresh tests
+        run: go test github.com/rclone/Proton-API-Bridge github.com/rclone/Proton-API-Bridge/common github.com/rclone/go-proton-api -run 'TestAuthenticatedName|TestAuth.*Refresh|TestAuthHook|TestAuthPersistence|TestLogin.*Refresh|Test.*Block|TestRequireActiveFolder|TestDistinctDirectoryNames|TestFileDownloadReader|TestNameFixtures' -count=1
+      - name: Race and static checks
+        run: |
+          go test -race ./backend/protondrive ./cmd/bisync -run 'TestSession|TestRequireChecksum|TestLockfile' -count=1
+          go vet ./backend/protondrive/... ./backend/internxt/... ./cmd/bisync/...
+      - name: Build test CLI
+        run: go build -mod=readonly -tags noselfupdate -o "$RUNNER_TEMP/rclone-acceptance" .
+      - name: Complete disposable CLI acceptance
+        shell: pwsh
+        run: ./scripts/verify-bisync-integration.ps1 -Rclone "$env:RUNNER_TEMP/rclone-acceptance" -WorkRoot "$env:RUNNER_TEMP/bisync-acceptance"
+  build:
+    needs: validate
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    strategy:
+      fail-fast: true
+      matrix:
+        target: [windows-amd64, linux-amd64, linux-arm64, darwin-amd64, darwin-arm64]
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff
+        with:
+          go-version: '1.27.2'
+          cache: false
+      - name: Build and verify immutable archive
+        shell: pwsh
+        env:
+          RELEASE_TAG: ${{ inputs.release_tag }}
+          TARGET: ${{ matrix.target }}
+        run: ./scripts/build-fork-release.ps1 -Tag $env:RELEASE_TAG -OutputDirectory "$env:RUNNER_TEMP/distribution" -Targets $env:TARGET
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: engine-${{ matrix.target }}
+          path: |
+            ${{ runner.temp }}/distribution/*.zip
+            ${{ runner.temp }}/distribution/CHANGELOG.md
+          if-no-files-found: error
+          retention-days: 30
+  publish:
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          pattern: engine-*
+          path: distribution
+          merge-multiple: true
+      - name: Publish a new verified fork release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RELEASE_TAG: ${{ inputs.release_tag }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$RELEASE_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+-cloudbridge\.[0-9]+$ ]]
+          cd distribution
+          test "$(find . -maxdepth 1 -name '*.zip' | wc -l)" -eq 5
+          sha256sum ./*.zip CHANGELOG.md > SHA256SUMS.txt
+          jq -n --arg tag "$RELEASE_TAG" --arg sha "$GITHUB_SHA" --rawfile body CHANGELOG.md '{tag_name:$tag,target_commitish:$sha,name:("rclone "+$tag),body:$body,draft:true,prerelease:true,make_latest:"false"}' > "$RUNNER_TEMP/release.json"
+          release_id="$(gh api --method POST "repos/$GH_REPO/releases" --input "$RUNNER_TEMP/release.json" --jq '.id')"
+          gh release upload "$RELEASE_TAG" ./* --repo "$GH_REPO"
+          gh api --method PATCH "repos/$GH_REPO/releases/$release_id" -F draft=false -F prerelease=true -f make_latest=false >/dev/null

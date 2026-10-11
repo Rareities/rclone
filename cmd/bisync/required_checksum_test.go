@@ -90,6 +90,29 @@ func TestRequireChecksumAcceptsEmptyFileWithHash(t *testing.T) {
 	require.Equal(t, "da39a3ee5e6b4b0d3255bfef95601890afd80709", ls1.getHash("empty"))
 }
 
+func TestRequireChecksumRejectsNormalisedNameCollisionBeforeResync(t *testing.T) {
+	for _, path1 := range []bool{true, false} {
+		b, ctx, left, right := checksumTestRun(t)
+		side := left
+		if !path1 {
+			side = right
+		}
+		side.AddObject(mockobject.New("caf\u00e9.txt").WithContent([]byte("one"), mockobject.SeekModeNone))
+		side.AddObject(mockobject.New("cafe\u0301.txt").WithContent([]byte("two"), mockobject.SeekModeNone))
+		err := b.resync(ctx)
+		require.ErrorContains(t, err, "ambiguous normalised names")
+		require.Zero(t, left.mutations+right.mutations)
+	}
+}
+
+func TestRequireChecksumAllowsOneNormalisedNamePerSide(t *testing.T) {
+	b, ctx, left, right := checksumTestRun(t)
+	left.AddObject(mockobject.New("caf\u00e9.txt").WithContent([]byte("one"), mockobject.SeekModeNone))
+	right.AddObject(mockobject.New("cafe\u0301.txt").WithContent([]byte("one"), mockobject.SeekModeNone))
+	_, _, err := b.makeMarchListing(ctx)
+	require.NoError(t, err)
+}
+
 func TestRequireChecksumRejectsNoCommonHash(t *testing.T) {
 	b, ctx, _, f2 := checksumTestRun(t)
 	f2.SetHashes(hash.NewHashSet(hash.MD5))

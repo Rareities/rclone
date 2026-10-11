@@ -1,5 +1,23 @@
 # Proton Drive and CloudBridge patch ledger
 
+## Final fork release integration
+
+The final integration adds process-shared, whole-tuple credential persistence,
+sticky callback error propagation and the reviewed contained Proton API source.
+The exact source/checksum and removal conditions are recorded in
+`third_party/go-proton-api/UPSTREAM.md`. Original configuration-section metadata
+is retained before generated policy suffixes; it is never inferred by stripping
+arbitrary braces from a remote name.
+
+`--require-checksum` now requests duplicate-name rejection from the existing
+march traversal. This closes the alternate implementation's Unicode ambiguity
+gate without adding a second full cloud scan. Ordinary operations retain their
+existing policy. New tests assert rejection before any mutation and preserve a
+single differently normalised name on each side.
+
+See `docs/releases/v1.76.0-cloudbridge.1.md` for the complete fork changelog,
+upgrade requirements, upstream intake and genuine remaining acceptance gates.
+
 This branch builds on Rareities/rclone `3a5758eeaa7250635f756f56c84128445d33ebe2`.
 The source VERSION remains the upstream development version, not a claim of a
 stable release. Existing upload retry, timestamp, crypto and security fixes are

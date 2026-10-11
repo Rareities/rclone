@@ -463,7 +463,11 @@ func newProtonDrive(ctx context.Context, f *Fs, opt *Options, m configmap.Mapper
 	config.EnableCaching = opt.EnableCaching
 
 	hooks := newSessionAuth(m)
+	if err := hooks.persistenceError(); err != nil {
+		return nil, err
+	}
 	config.AuthRefreshHook = hooks.refresh
+	config.AuthPersistenceHook = hooks.persistenceError
 
 	// The login and its callbacks must start from the same credential snapshot.
 	// A separate mapper read could cross a concurrent reconnect or token rotation.
@@ -476,7 +480,7 @@ func newProtonDrive(ctx context.Context, f *Fs, opt *Options, m configmap.Mapper
 		config.ReusableCredential.RefreshToken = hooks.initial.refresh
 		config.ReusableCredential.SaltedKeyPass = hooks.initial.salt
 
-		protonDrive /* credential will be nil since access credentials are passed in */, _, err := protonDriveAPI.NewProtonDrive(ctx, config, hooks.onAuth, hooks.onDeauth)
+		protonDrive /* credential will be nil since access credentials are passed in */, _, err := protonDriveAPI.NewProtonDrive(ctx, config, hooks.onAuth, hooks.onRejectedRefresh)
 		if err != nil {
 			// Network, service and cryptographic errors do not prove revocation.
 			// Only the scoped deauth callback may clear this session. Never run a
@@ -484,6 +488,9 @@ func newProtonDrive(ctx context.Context, f *Fs, opt *Options, m configmap.Mapper
 			return nil, fmt.Errorf("couldn't initialise Proton Drive using its saved session (retry connection errors; reconnect a revoked session): %w", err)
 		} else {
 			fs.Debugf(f, "Used cached credential to initialize the ProtonDrive API")
+			if err := hooks.persistenceError(); err != nil {
+				return nil, err
+			}
 			return protonDrive, nil
 		}
 	}
@@ -503,7 +510,7 @@ func newProtonDrive(ctx context.Context, f *Fs, opt *Options, m configmap.Mapper
 		}
 		config.FirstLoginCredential.TwoFA = code
 	}
-	protonDrive, auth, err := protonDriveAPI.NewProtonDrive(ctx, config, hooks.onAuth, hooks.onDeauth)
+	protonDrive, auth, err := protonDriveAPI.NewProtonDrive(ctx, config, hooks.onAuth, hooks.onRejectedRefresh)
 	if err != nil {
 		return nil, fmt.Errorf("couldn't initialize a new proton drive instance: %w", err)
 	}

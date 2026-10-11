@@ -42,6 +42,7 @@ func (b *bisyncRun) makeMarchListing(ctx context.Context) (*fileList, *fileList,
 		DstIncludeAll:          false,
 		NoCheckDest:            false,
 		NoUnicodeNormalization: ci.NoUnicodeNormalization,
+		RejectDuplicateNames:   b.opt.RequireChecksum,
 	}
 	b.march.err = m.Run(ctx)
 

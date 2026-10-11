@@ -2,7 +2,7 @@ package protondrive
 
 import (
 	"crypto/sha256"
-	"strings"
+	"encoding/binary"
 	"sync"
 
 	"github.com/rclone/go-proton-api"
@@ -37,34 +37,47 @@ func writeCredentials(m configmap.Mapper, value credentials) {
 }
 
 func mapperOwner(m configmap.Mapper) [32]byte {
-	values := make([]string, 0, 3)
+	digest := sha256.New()
 	for _, name := range []string{"username", "password", "mailbox_password"} {
 		value, _ := m.Get(name)
-		values = append(values, name+"\x00"+value)
+		var length [8]byte
+		binary.BigEndian.PutUint64(length[:], uint64(len(value)))
+		_, _ = digest.Write(length[:])
+		_, _ = digest.Write([]byte(value))
 	}
-	return sha256.Sum256([]byte(strings.Join(values, "\x00")))
+	var sum [32]byte
+	copy(sum[:], digest.Sum(nil))
+	return sum
 }
 
 // sessionAuth owns callbacks for one filesystem. UID and salted key bind a
 // callback to its original login generation, not merely to a remote's name.
 type sessionAuth struct {
-	m       configmap.Mapper
-	owner   [32]byte
-	initial credentials
-	current credentials
-	retired map[[32]byte]struct{}
-	pending proton.Auth
+	m           configmap.Mapper
+	owner       [32]byte
+	initial     credentials
+	current     credentials
+	retired     map[[32]byte]struct{}
+	pending     proton.Auth
+	persistence *credentialStorage
+	persistErr  error
 }
 
 func newSessionAuth(m configmap.Mapper) *sessionAuth {
-	credentialMu.Lock()
-	defer credentialMu.Unlock()
+	s := &sessionAuth{m: m, retired: make(map[[32]byte]struct{})}
+	s.persistence, s.persistErr = newCredentialStorage(m)
+	unlock, err := s.lock()
+	if err != nil {
+		return s
+	}
+	defer unlock()
 	value := readCredentials(m)
 	current := value
 	if !value.complete() {
 		current = credentials{}
 	}
-	return &sessionAuth{m: m, owner: mapperOwner(m), initial: value, current: current, retired: make(map[[32]byte]struct{})}
+	s.owner, s.initial, s.current = mapperOwner(m), value, current
+	return s
 }
 
 func (s *sessionAuth) sameOwner() bool { return mapperOwner(s.m) == s.owner }
@@ -76,8 +89,11 @@ func (s *sessionAuth) rememberOld(refresh string) {
 }
 
 func (s *sessionAuth) onAuth(auth proton.Auth) {
-	credentialMu.Lock()
-	defer credentialMu.Unlock()
+	unlock, err := s.lock()
+	if err != nil {
+		return
+	}
+	defer unlock()
 	if !s.sameOwner() || auth.UID == "" || auth.AccessToken == "" || auth.RefreshToken == "" {
 		return
 	}
@@ -95,30 +111,41 @@ func (s *sessionAuth) onAuth(auth proton.Auth) {
 		return
 	}
 	if stored.refresh != s.current.refresh && stored.refresh != auth.RefreshToken {
-		return // A newer callback or another client has already committed a rotation.
+		return // The winning stored rotation can be adopted by refresh().
 	}
 	if s.current.refresh != auth.RefreshToken {
 		s.rememberOld(s.current.refresh)
 	}
-	s.current = credentials{auth.UID, auth.AccessToken, auth.RefreshToken, stored.salt}
-	if stored != s.current {
-		writeCredentials(s.m, s.current)
+	value := credentials{auth.UID, auth.AccessToken, auth.RefreshToken, stored.salt}
+	if stored != value && !s.store(value) {
+		return
 	}
+	s.current = value
 }
 
 func (s *sessionAuth) onDeauth() {
-	credentialMu.Lock()
-	defer credentialMu.Unlock()
+	unlock, err := s.lock()
+	if err != nil {
+		return
+	}
+	defer unlock()
 	stored := readCredentials(s.m)
 	if s.sameOwner() && s.current.complete() && stored.uid == s.current.uid &&
 		stored.refresh == s.current.refresh && stored.salt == s.current.salt {
-		writeCredentials(s.m, credentials{})
+		s.store(credentials{})
 	}
 }
 
+// A spent refresh token can be the losing side of a concurrent rotation.
+// Preserve its saved credentials until an explicit reconnect decision.
+func (s *sessionAuth) onRejectedRefresh() {}
+
 func (s *sessionAuth) refresh() (uid, access, refresh string, ok bool) {
-	credentialMu.Lock()
-	defer credentialMu.Unlock()
+	unlock, err := s.lock()
+	if err != nil {
+		return "", "", "", false
+	}
+	defer unlock()
 	stored := readCredentials(s.m)
 	if !s.sameOwner() || !stored.complete() || stored.uid != s.current.uid || stored.salt != s.current.salt {
 		return "", "", "", false
@@ -134,8 +161,11 @@ func (s *sessionAuth) refresh() (uid, access, refresh string, ok bool) {
 }
 
 func (s *sessionAuth) commitLogin(uid, access, refresh, salt string) bool {
-	credentialMu.Lock()
-	defer credentialMu.Unlock()
+	unlock, err := s.lock()
+	if err != nil {
+		return false
+	}
+	defer unlock()
 	value := credentials{uid, access, refresh, salt}
 	if !s.sameOwner() || !value.complete() || readCredentials(s.m) != s.initial {
 		return false
@@ -143,8 +173,10 @@ func (s *sessionAuth) commitLogin(uid, access, refresh, salt string) bool {
 	if s.pending.UID == uid && s.pending.AccessToken != "" && s.pending.RefreshToken != "" {
 		value.access, value.refresh = s.pending.AccessToken, s.pending.RefreshToken
 	}
+	if !s.store(value) {
+		return false
+	}
 	s.current = value
 	s.pending = proton.Auth{}
-	writeCredentials(s.m, value)
 	return true
 }

@@ -123,6 +123,7 @@ func (section getConfigFile) Get(key string) (value string, ok bool) {
 func ConfigMap(prefix string, options Options, configName string, connectionStringConfig configmap.Simple) (config *configmap.Map) {
 	// Create the config
 	config = configmap.New()
+	config.SetConfigName(configName)
 
 	// Read the config, more specific to least specific
 

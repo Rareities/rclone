@@ -45,6 +45,7 @@ type March struct {
 	NoCheckDest            bool            // transfer all objects regardless without checking dst
 	NoUnicodeNormalization bool            // don't normalize unicode characters in filenames
 	NoProcessDstOnly       bool            // if set, when source listing finishes, cancel the dst listing
+	RejectDuplicateNames   bool            // fail ambiguous names instead of selecting one; intended for safety preflights
 	// internal state
 	srcListDir   listDirFn // function to call to list a directory in the src
 	dstListDir   listDirFn // function to call to list a directory in the dst
@@ -310,6 +311,7 @@ func (m *March) matchListings(srcChan, dstChan <-chan fs.DirEntry, dstCancel fun
 		src, dst                 fs.DirEntry
 		srcHasMore, dstHasMore   = true, true
 		srcName, dstName         string
+		duplicateErr             error
 	)
 	srcDone := func() {
 		srcPrevName = srcName
@@ -346,6 +348,10 @@ func (m *March) matchListings(srcChan, dstChan <-chan fs.DirEntry, dstCancel fun
 			break
 		}
 		if src != nil && srcPrev != nil {
+			if m.RejectDuplicateNames && duplicateErr == nil &&
+				srcName[:len(srcName)-1] == srcPrevName[:len(srcPrevName)-1] {
+				duplicateErr = fmt.Errorf("ambiguous normalised names in source: %q and %q", srcPrev.Remote(), src.Remote())
+			}
 			if srcName == srcPrevName && fs.DirEntryType(srcPrev) == fs.DirEntryType(src) {
 				fs.Logf(src, "Duplicate %s found in source - ignoring", fs.DirEntryType(src))
 				srcDone() // skip the src and retry the dst
@@ -356,6 +362,10 @@ func (m *March) matchListings(srcChan, dstChan <-chan fs.DirEntry, dstCancel fun
 			}
 		}
 		if dst != nil && dstPrev != nil {
+			if m.RejectDuplicateNames && duplicateErr == nil &&
+				dstName[:len(dstName)-1] == dstPrevName[:len(dstPrevName)-1] {
+				duplicateErr = fmt.Errorf("ambiguous normalised names in destination: %q and %q", dstPrev.Remote(), dst.Remote())
+			}
 			if dstName == dstPrevName && fs.DirEntryType(dst) == fs.DirEntryType(dstPrev) {
 				fs.Logf(dst, "Duplicate %s found in destination - ignoring", fs.DirEntryType(dst))
 				dstDone() // skip the dst and retry the src
@@ -390,7 +400,7 @@ func (m *March) matchListings(srcChan, dstChan <-chan fs.DirEntry, dstCancel fun
 			srcDone()
 		}
 	}
-	return nil
+	return duplicateErr
 }
 
 // processJob processes a listDirJob listing the source and

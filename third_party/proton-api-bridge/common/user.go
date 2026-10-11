@@ -45,6 +45,9 @@ func registerAuthHandlers(c *proton.Client, config *Config, authHandler proton.A
 	if config.AuthRefreshHook != nil {
 		c.AddAuthRefreshHook(config.AuthRefreshHook)
 	}
+	if config.AuthPersistenceHook != nil {
+		c.AddAuthPersistenceHook(config.AuthPersistenceHook)
+	}
 }
 
 /*
