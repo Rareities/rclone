@@ -55,6 +55,28 @@ Its presence alone does not indicate an active job. The existing `.lck` metadata
 file and explicit recovery semantics remain separate. No automatic resync,
 unconditional lock deletion or `--force` is added.
 
+## Listing identity and path aliases
+
+Bisync retains the existing listing filenames. Because their legacy path
+normalisation can map different endpoints to one filename (slashes versus
+underscores, embedded `..` delimiters or config override suffixes), a second
+OS lock protects the actual listing basename alongside the unordered endpoint
+pair lock. Both locks apply to dry runs as well as live runs.
+
+A versioned JSON sidecar binds the legacy basename to the **ordered raw**
+Path1/Path2 endpoint identities. A normal run cannot use listings without a
+valid matching binding, including existing legacy listings whose original pair
+cannot be proven. Such runs stop with an explicit `--resync` instruction.
+The sidecar is stored alongside the persistent guards, with a `.lck-guard`
+suffix for compatibility with existing workdir file comparisons. It is
+separate from the actual lock inode and is atomically replaced under that lock.
+Review both endpoints and the affected listings first, preferably with a
+`--dry-run --resync-mode=path1` preview; dry runs never adopt or overwrite the
+binding. A successful non-dry-run explicit `--resync` establishes it, while an
+interrupted or unsuccessful resync leaves the binding pending and unusable.
+Changing the endpoint order or its underlying raw identity also requires a
+reviewed resync. The identity file contains path names only and no credentials.
+
 ## Validation commands
 
 ```sh

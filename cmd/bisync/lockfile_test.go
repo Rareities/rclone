@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/rclone/rclone/cmd/bisync/bilib"
 	"github.com/rclone/rclone/fs"
 	"github.com/rclone/rclone/fstest/mockfs"
 	"github.com/stretchr/testify/assert"
@@ -137,16 +138,159 @@ func TestLockfileReversePairCannotRunConcurrently(t *testing.T) {
 	forward := &bisyncRun{
 		fs1: left, fs2: right,
 		basePath: filepath.Join(workDir, "forward"),
-		opt:      &Options{},
+		opt:      &Options{Resync: true},
 	}
 	reversed := &bisyncRun{
 		fs1: right, fs2: left,
 		basePath: filepath.Join(workDir, "reversed"),
-		opt:      &Options{},
+		opt:      &Options{Resync: true},
 	}
 	require.NoError(t, forward.setLockFile())
 	require.ErrorContains(t, reversed.setLockFile(), "another bisync run")
 	require.NoError(t, forward.removeLockFile())
 	require.NoError(t, reversed.setLockFile())
 	require.NoError(t, reversed.removeLockFile())
+}
+
+func TestCollidingBasenamesExcludeDryAndLiveRuns(t *testing.T) {
+	ctx := context.Background()
+	root := t.TempDir()
+	one, err := mockfs.NewFs(ctx, "local", "parent/child", nil)
+	require.NoError(t, err)
+	alias, err := mockfs.NewFs(ctx, "local", "parent_child", nil)
+	require.NoError(t, err)
+	other, err := mockfs.NewFs(ctx, "local", "other", nil)
+	require.NoError(t, err)
+	first := &bisyncRun{fs1: one, fs2: other, basePath: bilib.BasePath(ctx, root, one, other), opt: &Options{DryRun: true, Resync: true}}
+	second := &bisyncRun{fs1: alias, fs2: other, basePath: bilib.BasePath(ctx, root, alias, other), opt: &Options{DryRun: true, Resync: true}}
+	require.Equal(t, first.basePath, second.basePath)
+	require.NotEqual(t, first.pairGuardPath(), second.pairGuardPath())
+	require.NoError(t, first.setLockFile())
+	require.ErrorContains(t, second.setLockFile(), "another bisync run")
+	require.NoError(t, first.removeLockFile())
+	require.NoError(t, second.setLockFile())
+	require.NoError(t, second.removeLockFile())
+
+	first.opt.DryRun = false
+	first.opt.Resync = true
+	second.opt.DryRun = true
+	require.NoError(t, first.setLockFile())
+	require.ErrorContains(t, second.setLockFile(), "another bisync run")
+	require.NoError(t, first.removeLockFile())
+}
+
+func TestBisyncBaselineIdentityRequiresExplicitReviewedResync(t *testing.T) {
+	ctx := context.Background()
+	root := t.TempDir()
+	a, err := mockfs.NewFs(ctx, "local", "folder/nested", nil)
+	require.NoError(t, err)
+	b, err := mockfs.NewFs(ctx, "local", "folder_nested", nil)
+	require.NoError(t, err)
+	right, err := mockfs.NewFs(ctx, "local", "second", nil)
+	require.NoError(t, err)
+	makeRun := func(left fs.Fs, resync bool) *bisyncRun {
+		base := bilib.BasePath(ctx, root, left, right)
+		return &bisyncRun{fs1: left, fs2: right, basePath: base,
+			listing1: base + ".path1.lst", listing2: base + ".path2.lst", opt: &Options{Resync: resync}}
+	}
+	legacy := makeRun(a, false)
+	require.Equal(t, legacy.basePath, makeRun(b, false).basePath)
+	require.NoError(t, os.WriteFile(legacy.listing1, []byte("legacy state"), 0600))
+	require.NoError(t, os.WriteFile(legacy.listing2, []byte("legacy state"), 0600))
+	require.ErrorContains(t, legacy.setLockFile(), "--resync")
+	require.ErrorContains(t, makeRun(b, false).setLockFile(), "--resync")
+	// Preview never binds a legacy identity.
+	preview := makeRun(a, true)
+	preview.opt.DryRun = true
+	require.NoError(t, preview.setLockFile())
+	require.NoError(t, preview.removeLockFile())
+	require.ErrorContains(t, legacy.setLockFile(), "--resync")
+
+	initial := makeRun(a, true)
+	require.NoError(t, initial.setLockFile())
+	initial.abort = true
+	require.ErrorContains(t, initial.commitBaselineIdentity(), "did not finish cleanly")
+	require.NoError(t, initial.removeLockFile())
+	// Unsuccessful/interrupted resync leaves a pending, unusable identity.
+	require.ErrorContains(t, makeRun(a, false).setLockFile(), "--resync")
+	initial = makeRun(a, true)
+	require.NoError(t, initial.setLockFile())
+	require.NoError(t, initial.commitBaselineIdentity())
+	require.NoError(t, initial.removeLockFile())
+	matching := makeRun(a, false)
+	require.NoError(t, matching.setLockFile())
+	require.NoError(t, matching.removeLockFile())
+	require.ErrorContains(t, makeRun(b, false).setLockFile(), "different")
+
+	// Explicit resync changes ownership only when successful.
+	changeOwner := makeRun(b, true)
+	require.NoError(t, changeOwner.setLockFile())
+	require.NoError(t, changeOwner.commitBaselineIdentity())
+	require.NoError(t, changeOwner.removeLockFile())
+	require.ErrorContains(t, makeRun(a, false).setLockFile(), "different")
+	final := makeRun(b, false)
+	require.NoError(t, final.setLockFile())
+	require.NoError(t, final.removeLockFile())
+}
+
+func TestBaselineIdentityHandlesDotDelimitersAndConfigSuffixes(t *testing.T) {
+	ctx := context.Background()
+	first, err := mockfs.NewFs(ctx, "local", "a..b", nil)
+	require.NoError(t, err)
+	second, err := mockfs.NewFs(ctx, "local", "c", nil)
+	require.NoError(t, err)
+	third, err := mockfs.NewFs(ctx, "local", "a", nil)
+	require.NoError(t, err)
+	fourth, err := mockfs.NewFs(ctx, "local", "b..c", nil)
+	require.NoError(t, err)
+	require.Equal(t, bilib.SessionName(first, second), bilib.SessionName(third, fourth))
+	require.NotEqual(t, orderedBaselineIdentity(first, second), orderedBaselineIdentity(third, fourth))
+	leftA, err := mockfs.NewFs(ctx, "remote", "data{abc}", nil)
+	require.NoError(t, err)
+	leftB, err := mockfs.NewFs(ctx, "remote", "data{def}", nil)
+	require.NoError(t, err)
+	require.Equal(t, bilib.SessionName(leftA, second), bilib.SessionName(leftB, second))
+	require.NotEqual(t, orderedBaselineIdentity(leftA, second), orderedBaselineIdentity(leftB, second))
+	require.NotEqual(t, orderedBaselineIdentity(second, leftA), orderedBaselineIdentity(leftA, second))
+
+	for _, tc := range []struct {
+		name string
+		one  fs.Fs
+		two  fs.Fs
+		p1   fs.Fs
+		p2   fs.Fs
+	}{
+		{name: "dot delimiter", one: first, two: second, p1: third, p2: fourth},
+		{name: "config suffix", one: leftA, two: second, p1: leftB, p2: second},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			workDir := t.TempDir()
+			base := bilib.BasePath(ctx, workDir, tc.one, tc.two)
+			require.Equal(t, base, bilib.BasePath(ctx, workDir, tc.p1, tc.p2))
+			owner := &bisyncRun{fs1: tc.one, fs2: tc.two, basePath: base, opt: &Options{Resync: true}}
+			require.NoError(t, owner.setLockFile())
+			require.NoError(t, owner.commitBaselineIdentity())
+			require.NoError(t, owner.removeLockFile())
+			alias := &bisyncRun{fs1: tc.p1, fs2: tc.p2, basePath: base, opt: &Options{}}
+			require.ErrorContains(t, alias.setLockFile(), "different")
+		})
+	}
+}
+
+func TestCheckSyncOnlyCannotBindAResyncIdentity(t *testing.T) {
+	ctx := context.Background()
+	left, err := mockfs.NewFs(ctx, "local", "left", nil)
+	require.NoError(t, err)
+	right, err := mockfs.NewFs(ctx, "local", "right", nil)
+	require.NoError(t, err)
+	b := &bisyncRun{
+		fs1: left, fs2: right,
+		basePath: bilib.BasePath(ctx, t.TempDir(), left, right),
+		opt:      &Options{Resync: true, CheckSync: CheckSyncOnly},
+	}
+	require.NoError(t, b.setLockFile())
+	require.ErrorContains(t, b.commitBaselineIdentity(), "cannot establish")
+	require.NoError(t, b.removeLockFile())
+	b.opt = &Options{}
+	require.ErrorContains(t, b.setLockFile(), "--resync")
 }

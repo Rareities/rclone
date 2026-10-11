@@ -1,6 +1,7 @@
 package bisync
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/json"
 	"fmt"
@@ -23,6 +24,7 @@ const basicallyforever = fs.Duration(200 * 365 * 24 * time.Hour)
 
 type lockFileOpt struct {
 	guard       *flock.Flock
+	stateGuard  *flock.Flock
 	ownedFile   os.FileInfo
 	cleanupMu   sync.Mutex
 	stopRenewal func()
@@ -32,6 +34,119 @@ type lockFileOpt struct {
 		TimeRenewed time.Time
 		TimeExpires time.Time
 	}
+}
+
+// baselineIdentity binds an ordered pair to legacy-compatible listing names.
+// JSON retains separators, config suffixes and direction without ambiguity.
+type baselineIdentity struct {
+	Version int
+	Path1   string
+	Path2   string
+	Status  string
+}
+
+func orderedBaselineIdentity(path1, path2 fs.Info) baselineIdentity {
+	return baselineIdentity{Version: 1, Path1: bilib.FsPath(path1), Path2: bilib.FsPath(path2), Status: "bound"}
+}
+
+func (b *bisyncRun) stateGuardPath() string {
+	name := filepath.Base(b.basePath)
+	if runtime.GOOS == "windows" {
+		name = strings.ToLower(name)
+	}
+	sum := sha256.Sum256([]byte(name))
+	return filepath.Join(filepath.Dir(b.basePath), fmt.Sprintf("bisync-state-%x.lck-guard", sum))
+}
+
+func (b *bisyncRun) baselineIdentityPath() string {
+	name := filepath.Base(b.basePath)
+	if runtime.GOOS == "windows" {
+		name = strings.ToLower(name)
+	}
+	sum := sha256.Sum256([]byte(name))
+	// This companion file uses the same ignored suffix as persistent guards,
+	// while leaving the actual guard inode untouched and safe to lock on Windows.
+	return filepath.Join(filepath.Dir(b.basePath), fmt.Sprintf("bisync-identity-%x.lck-guard", sum))
+}
+
+func (b *bisyncRun) validateBaselineIdentity() error {
+	if b.fs1 == nil || b.fs2 == nil || b.opt.Resync {
+		return nil
+	}
+	identity, err := os.ReadFile(b.baselineIdentityPath())
+	if os.IsNotExist(err) {
+		return fmt.Errorf("bisync baseline has no verified endpoint identity (legacy or new state): review both paths and run explicit --resync")
+	}
+	if err != nil {
+		return fmt.Errorf("cannot read bisync baseline identity: %w", err)
+	}
+	if len(identity) > 65536 {
+		return fmt.Errorf("bisync baseline identity is invalid; review both paths and run explicit --resync")
+	}
+	var stored baselineIdentity
+	if err := json.Unmarshal(identity, &stored); err != nil || stored.Version != 1 || stored.Status != "bound" {
+		return fmt.Errorf("bisync baseline identity is incomplete or invalid; review both paths and run explicit --resync")
+	}
+	expected := orderedBaselineIdentity(b.fs1, b.fs2)
+	if stored != expected {
+		return fmt.Errorf("bisync baseline belongs to a different ordered path pair; review both paths and run explicit --resync")
+	}
+	return nil
+}
+
+// writeBaselineIdentity atomically records pending before resync and bound
+// after success. The separate guard inode remains fixed across replacements.
+func (b *bisyncRun) writeBaselineIdentity(status string) (err error) {
+	if b.fs1 == nil || b.fs2 == nil {
+		return nil
+	}
+	identity := orderedBaselineIdentity(b.fs1, b.fs2)
+	identity.Status = status
+	data, err := json.Marshal(identity)
+	if err != nil {
+		return err
+	}
+	target := b.baselineIdentityPath()
+	file, err := os.CreateTemp(filepath.Dir(target), ".bisync-identity-*")
+	if err != nil {
+		return err
+	}
+	defer func() { _ = os.Remove(file.Name()) }()
+	if err = file.Chmod(bilib.PermSecure); err == nil {
+		_, err = file.Write(data)
+	}
+	if err == nil {
+		err = file.Sync()
+	}
+	closeErr := file.Close()
+	if err == nil {
+		err = closeErr
+	}
+	if err != nil {
+		return err
+	}
+	return os.Rename(file.Name(), target)
+}
+
+func (b *bisyncRun) commitBaselineIdentity() error {
+	if b.opt.DryRun || !b.opt.Resync {
+		return nil
+	}
+	if b.critical || b.abort || b.InGracefulShutdown {
+		return fmt.Errorf("bisync resync did not finish cleanly; review paths and retry explicit --resync")
+	}
+	if b.opt.CheckSync == CheckSyncOnly {
+		return fmt.Errorf("bisync --check-sync=only cannot establish a new endpoint identity; run explicit --resync")
+	}
+	return b.writeBaselineIdentity("bound")
+}
+
+// runLockedWithIdentity finalises the identity while both OS guards are held.
+func (b *bisyncRun) runLockedWithIdentity(ctx context.Context) error {
+	if err := b.runLocked(ctx); err != nil {
+		return err
+	}
+	return b.commitBaselineIdentity()
 }
 
 // pairGuardPath shares one OS lock across both orientations of a path pair.
@@ -71,10 +186,37 @@ func (b *bisyncRun) setLockFile() (err error) {
 	b.lockFileOpt.guard = guard
 	defer func() {
 		if err != nil {
+			if b.lockFileOpt.stopRenewal != nil {
+				b.lockFileOpt.stopRenewal()
+				b.lockFileOpt.stopRenewal = nil
+			}
+			if b.lockFileOpt.ownedFile != nil {
+				if info, statErr := os.Stat(b.lockFile); statErr == nil && os.SameFile(info, b.lockFileOpt.ownedFile) {
+					_ = os.Remove(b.lockFile)
+				}
+			}
+			if b.lockFileOpt.stateGuard != nil {
+				_ = b.lockFileOpt.stateGuard.Unlock()
+				b.lockFileOpt.stateGuard = nil
+			}
 			_ = guard.Unlock()
 			b.lockFileOpt.guard = nil
 		}
 	}()
+	// A different raw pair can have the same legacy listing basename.
+	// Hold the basename lock even for dry runs and while checking ownership.
+	stateGuard := flock.New(b.stateGuardPath())
+	stateLocked, lockErr := stateGuard.TryLock()
+	if lockErr != nil {
+		return fmt.Errorf("cannot acquire bisync state guard: %w", lockErr)
+	}
+	if !stateLocked {
+		return fmt.Errorf("another bisync run owns the state for %s", b.basePath)
+	}
+	b.lockFileOpt.stateGuard = stateGuard
+	if err = b.validateBaselineIdentity(); err != nil {
+		return err
+	}
 	b.setLockFileExpiration()
 	if !b.opt.DryRun {
 		b.lockFile = b.basePath + ".lck"
@@ -111,6 +253,11 @@ func (b *bisyncRun) setLockFile() (err error) {
 		b.renewLockFile()
 		b.lockFileOpt.stopRenewal = b.startLockRenewal()
 	}
+	if b.opt.Resync && !b.opt.DryRun {
+		if err = b.writeBaselineIdentity("pending"); err != nil {
+			return fmt.Errorf("cannot protect pending bisync resync identity: %w", err)
+		}
+	}
 	return nil
 }
 
@@ -118,6 +265,12 @@ func (b *bisyncRun) removeLockFile() (err error) {
 	b.lockFileOpt.cleanupMu.Lock()
 	defer b.lockFileOpt.cleanupMu.Unlock()
 	defer func() {
+		if guard := b.lockFileOpt.stateGuard; guard != nil {
+			if unlockErr := guard.Unlock(); err == nil {
+				err = unlockErr
+			}
+			b.lockFileOpt.stateGuard = nil
+		}
 		if guard := b.lockFileOpt.guard; guard != nil {
 			if unlockErr := guard.Unlock(); err == nil {
 				err = unlockErr
