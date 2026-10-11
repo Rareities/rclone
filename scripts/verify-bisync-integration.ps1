@@ -113,6 +113,22 @@ $conflictLog = ReadText (Join-Path $conflict.Root 'two-sided-conflict.log')
 Assert ($conflictLog -match '(?i)conflict') 'Both-sided changes did not exercise conflict handling'
 Assert ($conflictLog -notmatch 'Safety abort: all files were changed') 'Conflict test was blocked by unrelated all-changed guard'
 
+$deleteModify = Case 'delete-versus-modify'
+1..20 | ForEach-Object { WriteText (Join-Path $deleteModify.Left ("control-$_.txt")) "control-$_" }
+WriteText (Join-Path $deleteModify.Left 'deleted-left.txt') 'before-left'
+WriteText (Join-Path $deleteModify.Left 'deleted-right.txt') 'before-right'
+$integrity = @('--compare=size,checksum', '--checksum', '--require-checksum', '--max-delete=10')
+Assert ((Run $deleteModify 'baseline' ($integrity + @('--resync-mode=path1'))) -eq 0) 'Delete/modify baseline failed'
+Remove-Item -LiteralPath (Join-Path $deleteModify.Left 'deleted-left.txt')
+WriteText (Join-Path $deleteModify.Right 'deleted-left.txt') 'modified-on-right-must-survive'
+Remove-Item -LiteralPath (Join-Path $deleteModify.Right 'deleted-right.txt')
+WriteText (Join-Path $deleteModify.Left 'deleted-right.txt') 'modified-on-left-must-survive'
+Assert ((Run $deleteModify 'opposing-delete-and-modify' $integrity) -eq 0) 'Delete/modify reconciliation failed'
+foreach ($side in @($deleteModify.Left, $deleteModify.Right)) {
+    Assert ((ReadText (Join-Path $side 'deleted-left.txt')) -eq 'modified-on-right-must-survive') 'Path1 deletion erased the modified Path2 version'
+    Assert ((ReadText (Join-Path $side 'deleted-right.txt')) -eq 'modified-on-left-must-survive') 'Path2 deletion erased the modified Path1 version'
+}
+
 $threshold = Case 'deletion-threshold'
 1..10 | ForEach-Object { WriteText (Join-Path $threshold.Left ("file-$_.txt")) "keep-$_" }
 Assert ((Run $threshold 'baseline' @('--resync-mode=path1')) -eq 0) 'Deletion baseline failed'
