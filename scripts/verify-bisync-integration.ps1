@@ -136,7 +136,7 @@ Assert ((ReadText (Join-Path $sentinel.Root 'absent-checkfiles.log')) -match 'Ac
 WriteText (Join-Path $sentinel.Left '.bisync-probe') ''
 WriteText (Join-Path $sentinel.Right '.bisync-probe') ''
 Assert ((Run $sentinel 'valid-checkfiles' @('--resync-mode=path1', '--check-access', '--check-filename=.bisync-probe')) -eq 0) 'Valid checkfiles rejected'
-Remove-Item -LiteralPath (Join-Path $sentinel.Right '.bisync-probe')
+Remove-Item -LiteralPath (Join-Path $sentinel.Right '.bisync-probe') -Force
 Assert ((Run $sentinel 'lost-checkfile' @('--check-access', '--check-filename=.bisync-probe')) -ne 0) 'Disappearing sentinel not rejected'
 Assert ((ReadText (Join-Path $sentinel.Root 'lost-checkfile.log')) -match 'Access test failed') 'Lost sentinel was rejected for an unrelated reason'
 Assert ((ReadText (Join-Path $sentinel.Right 'keep.txt')) -eq 'keep') 'Disappearing sentinel changed content'
