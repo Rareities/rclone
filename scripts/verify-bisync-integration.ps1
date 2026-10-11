@@ -135,6 +135,13 @@ Assert ((Run $sentinel 'absent-checkfiles' @('--resync-mode=path1', '--check-acc
 Assert ((ReadText (Join-Path $sentinel.Root 'absent-checkfiles.log')) -match 'Access test failed') 'Missing sentinel was rejected for an unrelated reason'
 WriteText (Join-Path $sentinel.Left '.bisync-probe') ''
 WriteText (Join-Path $sentinel.Right '.bisync-probe') ''
+# These markers represent the same pre-existing availability sentinel. Give
+# both an identical whole-second timestamp so this test isolates check-access
+# from the local backend's nanosecond modtime-reconciliation behaviour.
+$sentinelTime = [DateTime]::SpecifyKind([DateTime]::new(2024, 1, 2, 3, 4, 5), [DateTimeKind]::Utc)
+foreach ($side in @($sentinel.Left, $sentinel.Right)) {
+    [IO.File]::SetLastWriteTimeUtc((Join-Path $side '.bisync-probe'), $sentinelTime)
+}
 Assert ((Run $sentinel 'valid-checkfiles' @('--resync-mode=path1', '--check-access', '--check-filename=.bisync-probe')) -eq 0) 'Valid checkfiles rejected'
 Remove-Item -LiteralPath (Join-Path $sentinel.Right '.bisync-probe') -Force
 Assert ((Run $sentinel 'lost-checkfile' @('--check-access', '--check-filename=.bisync-probe')) -ne 0) 'Disappearing sentinel not rejected'
