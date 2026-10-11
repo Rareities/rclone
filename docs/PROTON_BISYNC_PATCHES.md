@@ -114,10 +114,19 @@ A disposable-account pilot still needs official-client round trips, refresh over
 a real expiry interval, multiple accounts, account-key changes and interrupted
 uploads. Shared With Me, Photos and future crypto formats are not newly supported.
 
-The mapper transaction mutex is process-local. Cross-process token rereads help
-adopt rotations but are not a complete cross-process compare-and-swap protocol.
-CloudBridge therefore uses conservative transfer admission and fresh job processes.
-Live interaction with a concurrently browsing RC daemon still needs validation.
+The mapper mutex protects threads; the Proton credential storage transaction also
+uses a process-shared file lock, reloads the entire configuration while locked,
+and saves the credential tuple once. This coordinates updated processes sharing
+the same canonical config file. Older binaries and separate configuration copies
+do not participate; do not edit that file with an older client during refresh.
+CloudBridge additionally uses conservative native admission and fresh job processes.
+
+The engine baseline identity binds filesystem names and paths, not a universal
+provider account ID. Reauthorizing a remote to a different account under the same
+name requires a fresh reviewed baseline, even if the configured path is unchanged.
+CloudBridge's follow-up app policy persists a manual-configuration generation to
+invalidate approvals after reconnect/edit/import while permitting automatic token
+refresh. Standalone CLI users must explicitly review account changes.
 
 No battery or network-efficiency improvement is claimed as measured. Android
 device launch, permissions, platform quotas and page-size compatibility must be
