@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"context"
 	"io"
+	"os"
+	"sync/atomic"
 
 	"github.com/ProtonMail/gopenpgp/v3/crypto"
 	"github.com/rclone/Proton-API-Bridge/utility"
@@ -13,6 +15,8 @@ import (
 type FileDownloadReader struct {
 	protonDrive *ProtonDrive
 	ctx         context.Context
+	cancel      context.CancelFunc
+	closed      atomic.Bool
 
 	link         *proton.Link
 	data         *bytes.Buffer
@@ -27,6 +31,12 @@ type FileDownloadReader struct {
 }
 
 func (r *FileDownloadReader) Read(p []byte) (int, error) {
+	if len(p) == 0 {
+		return 0, nil
+	}
+	if r.closed.Load() {
+		return 0, os.ErrClosed
+	}
 	if r.data.Len() == 0 {
 		// TODO: do we have memory sharing bug?
 		// to avoid sharing the underlying buffer array across re-population
@@ -48,8 +58,9 @@ func (r *FileDownloadReader) Read(p []byte) (int, error) {
 }
 
 func (r *FileDownloadReader) Close() error {
-	r.protonDrive = nil
-
+	if !r.closed.Swap(true) && r.cancel != nil {
+		r.cancel()
+	}
 	return nil
 }
 
@@ -61,6 +72,9 @@ func (reader *FileDownloadReader) populateBufferOnRead() (err error) {
 
 	offset := reader.nextRevision
 	for i := offset; i-offset < DOWNLOAD_BATCH_BLOCK_SIZE && i < len(reader.revision.Blocks); i++ {
+		if reader.closed.Load() {
+			return os.ErrClosed
+		}
 		// TODO: parallel download
 		var blockReader io.ReadCloser
 		blockReader, err = reader.protonDrive.c.GetBlock(reader.ctx, reader.revision.Blocks[i].BareURL, reader.revision.Blocks[i].Token)
@@ -126,9 +140,11 @@ func (protonDrive *ProtonDrive) DownloadFile(ctx context.Context, link *proton.L
 		return nil, 0, nil, err
 	}
 
+	readerCtx, cancel := context.WithCancel(ctx)
 	reader := &FileDownloadReader{
 		protonDrive: protonDrive,
-		ctx:         ctx,
+		ctx:         readerCtx,
+		cancel:      cancel,
 
 		link:         link,
 		data:         bytes.NewBuffer(nil),
@@ -161,9 +177,11 @@ func (protonDrive *ProtonDrive) DownloadFile(ctx context.Context, link *proton.L
 			// download will start from the specified block
 			n, err := io.CopyN(io.Discard, reader, offset)
 			if err != nil {
+				_ = reader.Close()
 				return nil, 0, nil, err
 			}
 			if int64(n) != offset {
+				_ = reader.Close()
 				return nil, 0, nil, ErrSeekOffsetAfterSkippingBlocks
 			}
 		}
@@ -173,9 +191,11 @@ func (protonDrive *ProtonDrive) DownloadFile(ctx context.Context, link *proton.L
 		protonDrive.Config.GetLogger().Warnf("Performing inefficient seek as metadata of encrypted file is missing")
 		n, err := io.CopyN(io.Discard, reader, offset)
 		if err != nil {
+			_ = reader.Close()
 			return nil, 0, nil, err
 		}
 		if int64(n) != offset {
+			_ = reader.Close()
 			return nil, 0, nil, ErrSeekOffsetAfterSkippingBlocks
 		}
 	}

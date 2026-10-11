@@ -2,6 +2,7 @@ package proton_api_bridge
 
 import (
 	"context"
+	"fmt"
 	"time"
 
 	"github.com/rclone/go-proton-api"
@@ -23,49 +24,82 @@ func (protonDrive *ProtonDrive) ListDirectory(
 		return nil, err
 	}
 
-	if folderLink.State == proton.LinkStateActive {
-		childrenLinks, err := protonDrive.c.ListChildren(ctx, protonDrive.MainShare.ShareID, folderLink.LinkID, true)
+	if err := requireActiveFolder(folderLink); err != nil {
+		return nil, err
+	}
+	childrenLinks, err := protonDrive.c.ListChildren(ctx, protonDrive.MainShare.ShareID, folderLink.LinkID, true)
+	if err != nil {
+		return nil, err
+	}
+
+	if childrenLinks != nil {
+		folderParentKR, err := protonDrive.getLinkKRByID(ctx, folderLink.ParentLinkID)
+		if err != nil {
+			return nil, err
+		}
+		signatureVerificationKR, err := protonDrive.getSignatureVerificationKeyring([]string{folderLink.SignatureEmail})
+		if err != nil {
+			return nil, err
+		}
+		folderLinkKR, err := folderLink.GetKeyRing(folderParentKR, signatureVerificationKR)
 		if err != nil {
 			return nil, err
 		}
 
-		if childrenLinks != nil {
-			folderParentKR, err := protonDrive.getLinkKRByID(ctx, folderLink.ParentLinkID)
-			if err != nil {
-				return nil, err
-			}
-			signatureVerificationKR, err := protonDrive.getSignatureVerificationKeyring([]string{folderLink.SignatureEmail})
-			if err != nil {
-				return nil, err
-			}
-			folderLinkKR, err := folderLink.GetKeyRing(folderParentKR, signatureVerificationKR)
-			if err != nil {
-				return nil, err
+		for i := range childrenLinks {
+			if childrenLinks[i].State != proton.LinkStateActive {
+				continue
 			}
 
-			for i := range childrenLinks {
-				if childrenLinks[i].State != proton.LinkStateActive {
-					continue
-				}
-
-				signatureVerificationKR, err := protonDrive.getSignatureVerificationKeyring([]string{childrenLinks[i].NameSignatureEmail, childrenLinks[i].SignatureEmail})
-				if err != nil {
-					return nil, err
-				}
-				name, err := childrenLinks[i].GetName(folderLinkKR, signatureVerificationKR)
-				if err != nil {
-					return nil, err
-				}
-				ret = append(ret, &ProtonDirectoryData{
-					Link:     &childrenLinks[i],
-					Name:     name,
-					IsFolder: childrenLinks[i].Type == proton.LinkTypeFolder,
-				})
+			signatureVerificationKR, err := protonDrive.getSignatureVerificationKeyring([]string{childrenLinks[i].NameSignatureEmail, childrenLinks[i].SignatureEmail})
+			if err != nil {
+				return nil, err
 			}
+			name, err := childrenLinks[i].GetName(folderLinkKR, signatureVerificationKR)
+			if err != nil {
+				return nil, err
+			}
+			ret = append(ret, &ProtonDirectoryData{
+				Link:     &childrenLinks[i],
+				Name:     name,
+				IsFolder: childrenLinks[i].Type == proton.LinkTypeFolder,
+			})
 		}
 	}
 
+	if err := requireDistinctDirectoryNames(ret); err != nil {
+		return nil, err
+	}
 	return ret, nil
+}
+
+// requireActiveFolder prevents a stale, removed folder from appearing empty.
+func requireActiveFolder(link *proton.Link) error {
+	if link == nil {
+		return ErrLinkMustNotBeNil
+	}
+	if link.Type != proton.LinkTypeFolder {
+		return ErrLinkTypeMustToBeFolderType
+	}
+	if link.State != proton.LinkStateActive {
+		return ErrLinkMustBeActive
+	}
+	return nil
+}
+
+// requireDistinctDirectoryNames rejects ambiguous or incomplete authenticated listings.
+func requireDistinctDirectoryNames(entries []*ProtonDirectoryData) error {
+	seen := make(map[string]struct{}, len(entries))
+	for _, entry := range entries {
+		if entry == nil || entry.Link == nil || entry.Name == "" || entry.Name == "." || entry.Name == ".." {
+			return fmt.Errorf("directory contains invalid authenticated entry")
+		}
+		if _, duplicate := seen[entry.Name]; duplicate {
+			return fmt.Errorf("directory contains duplicate authenticated filename %q", entry.Name)
+		}
+		seen[entry.Name] = struct{}{}
+	}
+	return nil
 }
 
 func (protonDrive *ProtonDrive) CreateNewFolderByID(ctx context.Context, parentLinkID string, folderName string) (string, error) {

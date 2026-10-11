@@ -1,6 +1,7 @@
 package bisync
 
 import (
+	"context"
 	"encoding/json"
 	"os"
 	"path/filepath"
@@ -9,6 +10,7 @@ import (
 	"time"
 
 	"github.com/rclone/rclone/fs"
+	"github.com/rclone/rclone/fstest/mockfs"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -122,4 +124,29 @@ func TestLockfileCleanupDoesNotRemoveReplacement(t *testing.T) {
 	contents, err := os.ReadFile(path)
 	require.NoError(t, err)
 	require.Equal(t, "new owner", string(contents))
+}
+
+func TestLockfileReversePairCannotRunConcurrently(t *testing.T) {
+	ctx := context.Background()
+	left, err := mockfs.NewFs(ctx, "left", "one", nil)
+	require.NoError(t, err)
+	right, err := mockfs.NewFs(ctx, "right", "two", nil)
+	require.NoError(t, err)
+
+	workDir := t.TempDir()
+	forward := &bisyncRun{
+		fs1: left, fs2: right,
+		basePath: filepath.Join(workDir, "forward"),
+		opt:      &Options{},
+	}
+	reversed := &bisyncRun{
+		fs1: right, fs2: left,
+		basePath: filepath.Join(workDir, "reversed"),
+		opt:      &Options{},
+	}
+	require.NoError(t, forward.setLockFile())
+	require.ErrorContains(t, reversed.setLockFile(), "another bisync run")
+	require.NoError(t, forward.removeLockFile())
+	require.NoError(t, reversed.setLockFile())
+	require.NoError(t, reversed.removeLockFile())
 }

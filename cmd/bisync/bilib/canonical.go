@@ -3,6 +3,8 @@ package bilib
 
 import (
 	"context"
+	"crypto/sha256"
+	"fmt"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -41,6 +43,15 @@ var nonCanonicalChars = regexp.MustCompile(`[\s\\/:?*]`)
 
 // SessionName makes a unique base name for the sync operation
 func SessionName(fs1, fs2 fs.Fs) string {
+	name := legacySessionName(fs1, fs2)
+	if len(name) > 200 {
+		sum := sha256.Sum256([]byte(name))
+		return "pair-" + fmt.Sprintf("%x", sum)
+	}
+	return name
+}
+
+func legacySessionName(fs1, fs2 fs.Fs) string {
 	return StripHexString(CanonicalPath(FsPath(fs1))) + ".." + StripHexString(CanonicalPath(FsPath(fs2)))
 }
 
@@ -72,6 +83,12 @@ func BasePath(ctx context.Context, workDir string, fs1, fs2 fs.Fs) string {
 
 	sessionName := SessionName(fs1, fs2)
 	basePath := filepath.Join(workDir, sessionName)
+	if legacyName := legacySessionName(fs1, fs2); legacyName != sessionName {
+		legacyBase := filepath.Join(workDir, legacyName)
+		if canonicalListingExists(legacyBase+".path1.lst") || canonicalListingExists(legacyBase+".path2.lst") {
+			return legacyBase
+		}
+	}
 
 	// Normalize to non-canonical version for overridden configs
 	// to ensure that backend-specific flags don't change the listing filename.
@@ -79,13 +96,13 @@ func BasePath(ctx context.Context, workDir string, fs1, fs2 fs.Fs) string {
 	// If so, we rename it (and overwrite non-suffixed version, if any.)
 	// If not, we carry on with the non-suffixed version.
 	// We should only find a suffixed version if bisync v1.66 or older created it.
-	if HasHexString(suffixedSession) && FileExists(listing1) {
+	if HasHexString(suffixedSession) && canonicalListingExists(listing1) {
 		fs.Infof(listing1, "renaming to: %s", basePath+".path1.lst")
 		if !operations.SkipDestructive(ctx, listing1, "rename to "+basePath+".path1.lst") {
 			_ = os.Rename(listing1, basePath+".path1.lst")
 		}
 	}
-	if HasHexString(suffixedSession) && FileExists(listing2) {
+	if HasHexString(suffixedSession) && canonicalListingExists(listing2) {
 		fs.Infof(listing2, "renaming to: %s", basePath+".path2.lst")
 		if !operations.SkipDestructive(ctx, listing1, "rename to "+basePath+".path2.lst") {
 			_ = os.Rename(listing2, basePath+".path2.lst")
@@ -94,4 +111,9 @@ func BasePath(ctx context.Context, workDir string, fs1, fs2 fs.Fs) string {
 		}
 	}
 	return basePath
+}
+
+func canonicalListingExists(path string) bool {
+	_, err := os.Stat(path)
+	return err == nil
 }

@@ -1,11 +1,15 @@
 package bisync
 
 import (
+	"crypto/sha256"
 	"encoding/json"
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
+	"runtime"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -30,11 +34,33 @@ type lockFileOpt struct {
 	}
 }
 
+// pairGuardPath shares one OS lock across both orientations of a path pair.
+// Listings remain ordered, so reversing the paths still needs a separate baseline.
+func (b *bisyncRun) pairGuardPath() string {
+	if b.fs1 == nil || b.fs2 == nil {
+		return b.basePath + ".lck-guard"
+	}
+	left, right := bilib.FsPath(b.fs1), bilib.FsPath(b.fs2)
+	if runtime.GOOS == "windows" {
+		if b.fs1.Name() == "local" {
+			left = strings.ToLower(left)
+		}
+		if b.fs2.Name() == "local" {
+			right = strings.ToLower(right)
+		}
+	}
+	if left > right {
+		left, right = right, left
+	}
+	sum := sha256.Sum256([]byte(left + "\x00" + right))
+	return filepath.Join(filepath.Dir(b.basePath), fmt.Sprintf("bisync-pair-%x.lck-guard", sum))
+}
+
 func (b *bisyncRun) setLockFile() (err error) {
 	b.lockFile = ""
 	// The guard inode is deliberately retained. Removing an OS lock file can
 	// let separate processes lock different inodes under the same pathname.
-	guard := flock.New(b.basePath + ".lck-guard")
+	guard := flock.New(b.pairGuardPath())
 	locked, err := guard.TryLock()
 	if err != nil {
 		return fmt.Errorf("cannot acquire bisync guard: %w", err)
