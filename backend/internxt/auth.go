@@ -8,6 +8,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"math/rand/v2"
 	"time"
 
 	"github.com/golang-jwt/jwt/v5"
@@ -167,7 +168,27 @@ func (f *Fs) reLogin(ctx context.Context) (*internxtauth.AccessResponse, error) 
 	}
 
 	if loginResp.TFA {
-		return nil, errors.New("account requires 2FA - please run: rclone config reconnect " + f.name + ":")
+		secret := revealTOTPSecret(f.opt.TOTPSecret)
+		if secret == "" {
+			return nil, errors.New("account requires 2FA - please run: rclone config reconnect " + f.name + ":")
+		}
+		var lastErr error
+		for _, offset := range []int64{0, -1, 1} {
+			code, err := generateTOTPCodeWithOffset(secret, offset)
+			if err != nil {
+				return nil, err
+			}
+			resp, err := internxtauth.DoLogin(ctx, cfg, f.opt.Email, password, code)
+			if err == nil {
+				return resp, nil
+			}
+			var rejected *sdkerrors.HTTPError
+			if !errors.As(err, &rejected) || (rejected.StatusCode() != 401 && rejected.StatusCode() != 403) {
+				return nil, err
+			}
+			lastErr = err
+		}
+		return nil, fmt.Errorf("TOTP verification failed in all adjacent time windows: %w", lastErr)
 	}
 
 	resp, err := internxtauth.DoLogin(ctx, cfg, f.opt.Email, password, "")
@@ -229,20 +250,49 @@ func (f *Fs) refreshOrReLogin(ctx context.Context) error {
 }
 
 // reAuthorize is called after getting 401 from the server.
-// It serializes re-auth attempts and uses a circuit-breaker to avoid infinite loops.
+// It serializes attempts and limits their frequency while the service is unavailable.
 func (f *Fs) reAuthorize(ctx context.Context) error {
+	return f.reAuthorizeWith(ctx, f.refreshOrReLogin)
+}
+
+func (f *Fs) reAuthorizeWith(ctx context.Context, authorize func(context.Context) error) error {
 	f.authMu.Lock()
 	defer f.authMu.Unlock()
 
-	if f.authFailed {
-		return errors.New("re-authorization permanently failed")
+	if time.Now().Before(f.nextAuthAllowed) {
+		return fmt.Errorf("re-authorization deferred until %s", f.nextAuthAllowed.Format(time.RFC3339))
 	}
 
-	err := f.refreshOrReLogin(ctx)
+	err := authorize(ctx)
 	if err != nil {
-		f.authFailed = true
+		steps := []time.Duration{time.Minute, 5 * time.Minute, 15 * time.Minute, time.Hour}
+		if f.authFailCount < len(steps) {
+			f.authFailCount++
+		}
+		backoff := steps[min(f.authFailCount-1, len(steps)-1)]
+		f.nextAuthAllowed = time.Now().Add(backoff - time.Duration(rand.Int64N(int64(backoff)/10)))
 		return err
 	}
+	f.authFailCount = 0
+	f.nextAuthAllowed = time.Time{}
 
 	return nil
+}
+
+// bootstrapLogin obtains missing credentials through the existing SDK login.
+func bootstrapLogin(ctx context.Context, name string, mapper configmap.Mapper, opt *Options) error {
+	temporary := &Fs{name: name, opt: *opt}
+	response, err := temporary.reLogin(ctx)
+	if err != nil {
+		return fmt.Errorf("missing mnemonic and login could not complete: %w", err)
+	}
+	if response.User.Mnemonic == "" {
+		return errors.New("Internxt login did not return a mnemonic")
+	}
+	token, err := jwtToOAuth2Token(response.NewToken)
+	if err != nil {
+		return err
+	}
+	mapper.Set("mnemonic", obscure.MustObscure(response.User.Mnemonic))
+	return oauthutil.PutToken(name, mapper, token, true)
 }

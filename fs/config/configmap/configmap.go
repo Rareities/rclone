@@ -44,9 +44,17 @@ type Mapper interface {
 // Map provides a wrapper around multiple Setter and
 // Getter interfaces.
 type Map struct {
-	setters []Setter
-	getters []getprio
+	setters    []Setter
+	getters    []getprio
+	configName string
 }
+
+// SetConfigName records the original persistent section before NewFs adds a
+// connection-override suffix. It does not change getter/setter precedence.
+func (c *Map) SetConfigName(name string) { c.configName = name }
+
+// ConfigName identifies a configured section; an empty name does not imply storage.
+func (c *Map) ConfigName() string { return c.configName }
 
 type getprio struct {
 	getter   Getter

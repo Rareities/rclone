@@ -50,6 +50,7 @@ type Options struct {
 	NoCleanup             bool
 	SaveQueues            bool // save extra debugging files (test only flag)
 	IgnoreListingChecksum bool
+	RequireChecksum       bool // require a common native hash and known size for every file
 	Resilient             bool
 	Recover               bool
 	TestFn                TestFunc // test-only option, for mocking errors
@@ -143,6 +144,7 @@ func init() {
 	flags.BoolVarP(cmdFlags, &tzLocal, "localtime", "", tzLocal, "Use local time in listings (default: UTC)", "")
 	flags.BoolVarP(cmdFlags, &Opt.NoCleanup, "no-cleanup", "", Opt.NoCleanup, "Retain working files (useful for troubleshooting and testing).", "")
 	flags.BoolVarP(cmdFlags, &Opt.IgnoreListingChecksum, "ignore-listing-checksum", "", Opt.IgnoreListingChecksum, "Do not use checksums for listings (add --ignore-checksum to additionally skip post-copy checksum checks)", "")
+	flags.BoolVarP(cmdFlags, &Opt.RequireChecksum, "require-checksum", "", Opt.RequireChecksum, "Abort before syncing if either path lacks a common native checksum or any file has a missing checksum or unknown size", "")
 	flags.BoolVarP(cmdFlags, &Opt.Resilient, "resilient", "", Opt.Resilient, "Allow future runs to retry after certain less-serious errors, instead of requiring --resync.", "")
 	flags.BoolVarP(cmdFlags, &Opt.Recover, "recover", "", Opt.Recover, "Automatically recover from interruptions without requiring --resync.", "")
 	flags.StringVarP(cmdFlags, &Opt.CompareFlag, "compare", "", Opt.CompareFlag, "Comma-separated list of bisync-specific compare options ex. 'size,modtime,checksum' (default: 'size,modtime')", "")

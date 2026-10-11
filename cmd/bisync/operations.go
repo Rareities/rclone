@@ -188,7 +188,7 @@ func Bisync(ctx context.Context, fs1, fs2 fs.Fs, optArg *Options) (err error) {
 	defer atexit.Unregister(fnHandle)
 
 	// run bisync
-	err = b.runLocked(ctx)
+	err = b.runLockedWithIdentity(ctx)
 
 	removeLockErr := b.removeLockFile()
 	if err == nil {
