@@ -2,8 +2,11 @@ package proton_api_bridge
 
 import (
 	"context"
+	"fmt"
 	"strings"
 	"time"
+
+	"github.com/ProtonMail/gopenpgp/v3/crypto"
 
 	"github.com/rclone/go-proton-api"
 	"github.com/relvacode/iso8601"
@@ -49,13 +52,32 @@ func (protonDrive *ProtonDrive) GetActiveRevisionAttrs(ctx context.Context, link
 		return nil, ErrLinkMustNotBeNil
 	}
 
-	revisionMetadata := link.FileProperties.ActiveRevision
-	revisionMetadata.XAttr = link.XAttr
-
 	nodeKR, err := protonDrive.getLinkKR(ctx, link)
 	if err != nil {
 		return nil, err
 	}
+	return protonDrive.activeRevisionAttrsWithKey(link, nodeKR)
+}
+
+// activeRevisionAttrsWithParent uses the verified parent from the same fresh listing.
+func (protonDrive *ProtonDrive) activeRevisionAttrsWithParent(link *proton.Link, parentKR *crypto.KeyRing) (*FileSystemAttrs, error) {
+	verificationKR, err := protonDrive.getSignatureVerificationKeyring([]string{link.SignatureEmail})
+	if err != nil {
+		return nil, err
+	}
+	nodeKR, err := link.GetKeyRing(parentKR, verificationKR)
+	if err != nil {
+		return nil, err
+	}
+	return protonDrive.activeRevisionAttrsWithKey(link, nodeKR)
+}
+
+func (protonDrive *ProtonDrive) activeRevisionAttrsWithKey(link *proton.Link, nodeKR *crypto.KeyRing) (*FileSystemAttrs, error) {
+	if link.FileProperties == nil {
+		return nil, fmt.Errorf("file %s has no revision properties", link.LinkID)
+	}
+	revisionMetadata := link.FileProperties.ActiveRevision
+	revisionMetadata.XAttr = link.XAttr
 
 	signatureVerificationKR, err := protonDrive.getSignatureVerificationKeyring([]string{revisionMetadata.SignatureEmail})
 	if err != nil {

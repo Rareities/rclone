@@ -12,11 +12,22 @@ type ProtonDirectoryData struct {
 	Link     *proton.Link
 	Name     string
 	IsFolder bool
+	Attrs    *FileSystemAttrs
 }
 
 func (protonDrive *ProtonDrive) ListDirectory(
 	ctx context.Context,
 	folderLinkID string) ([]*ProtonDirectoryData, error) {
+	return protonDrive.listDirectory(ctx, folderLinkID, false)
+}
+
+// ListDirectoryWithAttrs returns fresh authenticated names and file attributes.
+// The folder key is resolved once and is not retained across listings.
+func (protonDrive *ProtonDrive) ListDirectoryWithAttrs(ctx context.Context, folderLinkID string) ([]*ProtonDirectoryData, error) {
+	return protonDrive.listDirectory(ctx, folderLinkID, true)
+}
+
+func (protonDrive *ProtonDrive) listDirectory(ctx context.Context, folderLinkID string, withAttrs bool) ([]*ProtonDirectoryData, error) {
 	ret := make([]*ProtonDirectoryData, 0)
 
 	folderLink, err := protonDrive.getLink(ctx, folderLinkID)
@@ -51,6 +62,12 @@ func (protonDrive *ProtonDrive) ListDirectory(
 				continue
 			}
 
+			if childrenLinks[i].ParentLinkID != folderLink.LinkID {
+				return nil, fmt.Errorf("listed child does not belong to the requested folder")
+			}
+			if err := ctx.Err(); err != nil {
+				return nil, err
+			}
 			signatureVerificationKR, err := protonDrive.getSignatureVerificationKeyring([]string{childrenLinks[i].NameSignatureEmail, childrenLinks[i].SignatureEmail})
 			if err != nil {
 				return nil, err
@@ -59,10 +76,18 @@ func (protonDrive *ProtonDrive) ListDirectory(
 			if err != nil {
 				return nil, err
 			}
+			var attrs *FileSystemAttrs
+			if withAttrs && childrenLinks[i].Type == proton.LinkTypeFile {
+				attrs, err = protonDrive.activeRevisionAttrsWithParent(&childrenLinks[i], folderLinkKR)
+				if err != nil {
+					return nil, err
+				}
+			}
 			ret = append(ret, &ProtonDirectoryData{
 				Link:     &childrenLinks[i],
 				Name:     name,
 				IsFolder: childrenLinks[i].Type == proton.LinkTypeFolder,
+				Attrs:    attrs,
 			})
 		}
 	}

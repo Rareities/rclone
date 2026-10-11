@@ -696,6 +696,15 @@ func (f *Fs) readMetaDataForLink(ctx context.Context, link *proton.Link) (*proto
 //
 // If it can't be found it returns the error fs.ErrorObjectNotFound.
 func (f *Fs) newObjectWithLink(ctx context.Context, remote string, link *proton.Link) (fs.Object, error) {
+	fileSystemAttrs, err := f.readMetaDataForLink(ctx, link)
+	if err != nil {
+		return nil, err
+	}
+	return f.newObjectWithLinkAndAttrs(remote, link, fileSystemAttrs), nil
+}
+
+// newObjectWithLinkAndAttrs also accepts absent attributes without refetching them.
+func (f *Fs) newObjectWithLinkAndAttrs(remote string, link *proton.Link, fileSystemAttrs *protonDriveAPI.FileSystemAttrs) *Object {
 	o := &Object{
 		fs:     f,
 		remote: remote,
@@ -708,10 +717,6 @@ func (f *Fs) newObjectWithLink(ctx context.Context, remote string, link *proton.
 	o.mimetype = link.MIMEType
 	o.link = link
 
-	fileSystemAttrs, err := o.fs.readMetaDataForLink(ctx, link)
-	if err != nil {
-		return nil, err
-	}
 	if fileSystemAttrs != nil {
 		o.modTime = fileSystemAttrs.ModificationTime
 		o.originalSize = &fileSystemAttrs.Size
@@ -719,7 +724,7 @@ func (f *Fs) newObjectWithLink(ctx context.Context, remote string, link *proton.
 		o.digests = &fileSystemAttrs.Digests
 	}
 
-	return o, nil
+	return o
 }
 
 // Return an Object from a path only
@@ -752,7 +757,7 @@ func (f *Fs) List(ctx context.Context, dir string) (fs.DirEntries, error) {
 
 	var foldersAndFiles []*protonDriveAPI.ProtonDirectoryData
 	if err = f.pacer.Call(func() (bool, error) {
-		foldersAndFiles, err = f.protonDrive.ListDirectory(ctx, folderLinkID)
+		foldersAndFiles, err = f.protonDrive.ListDirectoryWithAttrs(ctx, folderLinkID)
 		return shouldRetry(ctx, err)
 	}); err != nil {
 		return nil, err
@@ -767,10 +772,7 @@ func (f *Fs) List(ctx context.Context, dir string) (fs.DirEntries, error) {
 			d := fs.NewDir(remote, time.Unix(foldersAndFiles[i].Link.ModifyTime, 0)).SetID(foldersAndFiles[i].Link.LinkID)
 			entries = append(entries, d)
 		} else {
-			obj, err := f.newObjectWithLink(ctx, remote, foldersAndFiles[i].Link)
-			if err != nil {
-				return nil, err
-			}
+			obj := f.newObjectWithLinkAndAttrs(remote, foldersAndFiles[i].Link, foldersAndFiles[i].Attrs)
 			entries = append(entries, obj)
 		}
 	}

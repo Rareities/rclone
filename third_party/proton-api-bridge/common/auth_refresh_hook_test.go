@@ -2,8 +2,10 @@ package common_test
 
 import (
 	"context"
+	"io"
 	"net/http"
 	"net/url"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -17,11 +19,18 @@ import (
 // redirectTransport sends every request to the fake server, since Config has
 // no host setting and the manager always targets the real API.
 type redirectTransport struct {
-	target *url.URL
-	next   http.RoundTripper
+	target  *url.URL
+	next    http.RoundTripper
+	expired *sync.Map
 }
 
 func (t redirectTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	if req.Method == http.MethodGet && req.URL.Path == "/core/v4/users" {
+		if _, expired := t.expired.Load(req.Header.Get("Authorization")); expired {
+			return &http.Response{StatusCode: http.StatusUnauthorized, Header: http.Header{"Content-Type": []string{"application/json"}},
+				Body: io.NopCloser(strings.NewReader(`{"Code":401,"Error":"expired test access token"}`)), Request: req}, nil
+		}
+	}
 	req = req.Clone(req.Context())
 	req.URL.Scheme = t.target.Scheme
 	req.URL.Host = t.target.Host
@@ -63,11 +72,12 @@ func TestLogin_RegistersAuthRefreshHook(t *testing.T) {
 
 	_, _, err := s.CreateUser("user", []byte("pass"))
 	require.NoError(t, err)
-	s.SetAuthLife(time.Second)
+	s.SetAuthLife(time.Minute)
 
 	target, err := url.Parse(s.GetHostURL())
 	require.NoError(t, err)
-	transport := redirectTransport{target: target, next: proton.InsecureTransport()}
+	expired := &sync.Map{}
+	transport := redirectTransport{target: target, next: proton.InsecureTransport(), expired: expired}
 
 	store := &credentialStore{}
 
@@ -97,9 +107,11 @@ func TestLogin_RegistersAuthRefreshHook(t *testing.T) {
 	_, secondClient, _, _, _, _, err := common.Login(context.Background(), second, store.save, func() { deauthed = true })
 	require.NoError(t, err)
 
-	// Let the access tokens expire, then have the first client refresh and
-	// rotate the shared refresh token.
-	time.Sleep(2 * time.Second)
+	// Deterministically expire the saved access token after both logins.
+	// A one-second real lifetime can expire during login or even refresh under
+	// the race detector, before the intended spent-refresh-token assertion.
+	expired.Store("Bearer "+cred.AccessToken, struct{}{})
+	expired.Store("Bearer "+reused.AccessToken, struct{}{})
 	_, err = firstClient.GetUser(context.Background())
 	require.NoError(t, err)
 

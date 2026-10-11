@@ -5,7 +5,12 @@ import (
 	"context"
 	"errors"
 	"io"
+	"strings"
 	"testing"
+	"time"
+
+	protonDriveAPI "github.com/rclone/Proton-API-Bridge"
+	"github.com/rclone/go-proton-api"
 
 	"github.com/rclone/rclone/fs"
 	"github.com/rclone/rclone/fs/hash"
@@ -76,4 +81,19 @@ func TestSHA1NormalisationAndMalformedMetadata(t *testing.T) {
 	value, err = normaliseSHA1("")
 	require.NoError(t, err)
 	require.Empty(t, value)
+}
+
+func TestListedObjectAttributesPreserveUnknownSize(t *testing.T) {
+	f := &Fs{opt: Options{ReportOriginalSize: true}}
+	link := &proton.Link{LinkID: "listed", Size: 999, ModifyTime: 100}
+	o := f.newObjectWithLinkAndAttrs("file", link, nil)
+	if o.Size() != -1 || o.ModTime(context.Background()).Unix() != 100 || o.digests != nil {
+		t.Fatalf("missing attrs must preserve unknown plaintext size: %+v", o)
+	}
+	attrs := &protonDriveAPI.FileSystemAttrs{Size: 12, ModificationTime: time.Unix(200, 0), Digests: strings.Repeat("a", 40)}
+	o = f.newObjectWithLinkAndAttrs("file", link, attrs)
+	got, err := o.Hash(context.Background(), hash.SHA1)
+	if o.Size() != 12 || o.ModTime(context.Background()).Unix() != 200 || err != nil || got != attrs.Digests {
+		t.Fatalf("listed plaintext attributes lost: size=%d hash=%q error=%v", o.Size(), got, err)
+	}
 }
