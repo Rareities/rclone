@@ -41,6 +41,13 @@ func (b *bisyncRun) setResyncDefaults() {
 // copy any unique files to the opposite path,
 // and resolve any differing files according to the --resync-mode.
 func (b *bisyncRun) resync(fctx context.Context) (err error) {
+	if b.opt.RequireChecksum {
+		// Resync normally starts copying while building its listings. Validate both
+		// complete trees first so missing metadata cannot permit an unsafe overwrite.
+		if _, _, err = b.makeMarchListing(fctx); err != nil {
+			return err
+		}
+	}
 	fs.Infof(nil, "Copying Path2 files to Path1")
 
 	// Save blank filelists (will be filled from sync results)

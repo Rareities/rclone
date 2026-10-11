@@ -111,6 +111,8 @@ require (
 	storj.io/uplink v1.14.3
 )
 
+require github.com/gofrs/flock v0.13.0
+
 require (
 	cloud.google.com/go/auth v0.23.1 // indirect
 	cloud.google.com/go/auth/oauth2adapt v0.2.8 // indirect
@@ -179,7 +181,6 @@ require (
 	github.com/go-resty/resty/v2 v2.17.2 // indirect
 	github.com/go-viper/mapstructure/v2 v2.5.0 // indirect
 	github.com/goccy/go-json v0.10.6 // indirect
-	github.com/gofrs/flock v0.13.0 // indirect
 	github.com/gogo/protobuf v1.3.2 // indirect
 	github.com/google/btree v1.1.3 // indirect
 	github.com/google/flatbuffers v25.12.19+incompatible // indirect
@@ -285,3 +286,7 @@ require (
 	golang.org/x/mobile v0.0.0-20260709172247-6129f5bee9d5
 	golang.org/x/term v0.46.0
 )
+
+replace github.com/rclone/go-proton-api => github.com/jomplox/go-proton-api v1.0.5-0.20260907162606-9dcca00ba1dc
+
+replace github.com/rclone/Proton-API-Bridge => ./third_party/proton-api-bridge

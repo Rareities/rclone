@@ -2,6 +2,8 @@ package bisync
 
 import (
 	"context"
+	"fmt"
+	"strings"
 	"sync"
 	"time"
 
@@ -150,6 +152,9 @@ func (b *bisyncRun) ForObject(o fs.Object, isPath1 bool) {
 		b.march.marchErrLock.Unlock()
 	}
 	hashVal, hashErr = b.tryDownloadHash(b.march.marchCtx, o, hashVal)
+	if hashErr == nil && b.opt.RequireChecksum {
+		hashErr = requireFileMetadata(o.Remote(), o.Size(), hashVal)
+	}
 	b.march.marchErrLock.Lock()
 	if b.march.firstErr == nil {
 		b.march.firstErr = hashErr
@@ -168,6 +173,17 @@ func (b *bisyncRun) ForObject(o fs.Object, isPath1 bool) {
 	b.march.marchLsLock.Lock()
 	ls.put(o.Remote(), o.Size(), modtime, hashVal, id, flags)
 	b.march.marchLsLock.Unlock()
+}
+
+// Empty files still have a checksum; an empty string means metadata is unavailable.
+func requireFileMetadata(name string, size int64, checksum string) error {
+	if size < 0 {
+		return fmt.Errorf("--require-checksum: unknown plaintext size for %q", name)
+	}
+	if strings.TrimSpace(checksum) == "" {
+		return fmt.Errorf("--require-checksum: checksum unavailable for %q", name)
+	}
+	return nil
 }
 
 func (b *bisyncRun) ForDir(o fs.Directory, isPath1 bool) {

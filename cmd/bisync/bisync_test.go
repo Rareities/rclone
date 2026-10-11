@@ -1913,6 +1913,11 @@ func (b *bisyncTest) listDir(dir string) (names []string) {
 	files, err := os.ReadDir(dir)
 	require.NoError(b.t, err)
 	ignoreIt := func(file string) bool {
+		if strings.HasSuffix(file, ".lck-guard") {
+			// OS guard inodes persist after release. Their ownership and lifecycle
+			// are asserted in lockfile_test.go, not in reconciliation goldens.
+			return true
+		}
 		ignoreList := []string{
 			// ".lst-control", ".lst-dry-control", ".lst-old", ".lst-dry-old",
 			".DS_Store",

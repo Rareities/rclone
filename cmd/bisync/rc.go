@@ -105,6 +105,12 @@ func rcBisync(ctx context.Context, in rc.Params) (out rc.Params, err error) {
 	if opt.IgnoreListingChecksum, err = in.GetBool("ignoreListingChecksum"); rc.NotErrParamNotFound(err) {
 		fs.Debugf("ignoreListingChecksum", "optional parameter is missing. using default value: %v", opt.IgnoreListingChecksum)
 	}
+	if value, present := in["requireChecksum"]; present {
+		opt.RequireChecksum, err = rc.Params{"requireChecksum": value}.GetBool("requireChecksum")
+		if err != nil {
+			return nil, err
+		}
+	}
 	if opt.Resilient, err = in.GetBool("resilient"); rc.NotErrParamNotFound(err) {
 		fs.Debugf("resilient", "optional parameter is missing. using default value: %v", opt.Resilient)
 	}

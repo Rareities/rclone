@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"sync"
 	"testing"
 	"time"
 
@@ -77,4 +78,48 @@ func TestLockfileIsExpired_ValidNotExpired(t *testing.T) {
 
 	b := newTestLockfileBisyncRun(t, string(content), fs.Duration(5*time.Minute))
 	assert.False(t, b.lockFileIsExpired(), "valid lockfile with future expiry should not be expired")
+}
+
+func TestLockfileConcurrentAcquisitionHasOneOwner(t *testing.T) {
+	const contenders = 12
+	base := filepath.Join(t.TempDir(), "pair")
+	start := make(chan struct{})
+	results := make(chan *bisyncRun, contenders)
+	var wg sync.WaitGroup
+	for i := 0; i < contenders; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			b := &bisyncRun{basePath: base, opt: &Options{}}
+			<-start
+			if b.setLockFile() == nil {
+				results <- b
+			}
+		}()
+	}
+	close(start)
+	wg.Wait()
+	close(results)
+	var owners []*bisyncRun
+	for b := range results {
+		owners = append(owners, b)
+	}
+	require.Len(t, owners, 1)
+	require.NoError(t, owners[0].removeLockFile())
+	require.NoError(t, owners[0].removeLockFile(), "cleanup must be idempotent")
+	next := &bisyncRun{basePath: base, opt: &Options{}}
+	require.NoError(t, next.setLockFile())
+	require.NoError(t, next.removeLockFile())
+}
+
+func TestLockfileCleanupDoesNotRemoveReplacement(t *testing.T) {
+	b := &bisyncRun{basePath: filepath.Join(t.TempDir(), "pair"), opt: &Options{}}
+	require.NoError(t, b.setLockFile())
+	path := b.lockFile
+	require.NoError(t, os.Rename(path, path+".original"))
+	require.NoError(t, os.WriteFile(path, []byte("new owner"), 0600))
+	require.Error(t, b.removeLockFile())
+	contents, err := os.ReadFile(path)
+	require.NoError(t, err)
+	require.Equal(t, "new owner", string(contents))
 }

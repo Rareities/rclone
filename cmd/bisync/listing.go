@@ -315,6 +315,9 @@ func (b *bisyncRun) loadListing(listing string) (*fileList, error) {
 	for {
 		line, err := reader.ReadString('\n')
 		if err == io.EOF {
+			if b.opt.RequireChecksum && len(line) != 0 {
+				return nil, fmt.Errorf("truncated bisync listing: %s", listing)
+			}
 			break
 		}
 		if err != nil {
@@ -328,6 +331,9 @@ func (b *bisyncRun) loadListing(listing string) (*fileList, error) {
 
 		match := lineRegex.FindStringSubmatch(line)
 		if match == nil {
+			if b.opt.RequireChecksum {
+				return nil, fmt.Errorf("invalid row in bisync listing: %s", listing)
+			}
 			fs.Logf(listing, "Ignoring incorrect line: %q", line)
 			continue
 		}
@@ -344,17 +350,34 @@ func (b *bisyncRun) loadListing(listing string) (*fileList, error) {
 				lastHashName = hashName
 				hashErr = ls.hash.Set(hashName)
 			} else if hashName != lastHashName {
+				if b.opt.RequireChecksum {
+					return nil, fmt.Errorf("inconsistent checksum types in bisync listing: %s", listing)
+				}
 				fs.Logf(listing, "Inconsistent hash type in line: %q", line)
 				continue
 			}
 		}
 
 		if (flags != "-" && flags != "d") || id != "-" || sizeErr != nil || timeErr != nil || hashErr != nil || nameErr != nil {
+			if b.opt.RequireChecksum {
+				return nil, fmt.Errorf("invalid metadata in bisync listing: %s", listing)
+			}
 			fs.Logf(listing, "Ignoring incorrect line: %q", line)
 			continue
 		}
 
+		if b.opt.RequireChecksum && flags != "d" {
+			if err := requireFileMetadata(nameVal, sizeVal, hashVal); err != nil {
+				return nil, err
+			}
+			if ls.hash != b.opt.Compare.HashType1 || ls.hash != b.opt.Compare.HashType2 {
+				return nil, fmt.Errorf("listing checksum type does not match the required common checksum: %s", listing)
+			}
+		}
 		if ls.has(nameVal) {
+			if b.opt.RequireChecksum {
+				return nil, fmt.Errorf("duplicate row in bisync listing: %s", listing)
+			}
 			fs.Logf(listing, "Duplicate line (keeping latest): %q", line)
 			if ls.afterTime(nameVal, timeVal) {
 				continue

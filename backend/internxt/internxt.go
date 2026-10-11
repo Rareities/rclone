@@ -57,7 +57,7 @@ func (f *Fs) shouldRetry(ctx context.Context, err error) (bool, error) {
 	if httpErr, ok := errors.AsType[*sdkerrors.HTTPError](err); ok {
 		switch httpErr.StatusCode() {
 		case 401:
-			if !f.authFailed {
+			{
 				authErr := f.reAuthorize(ctx)
 				if authErr != nil {
 					fs.Debugf(f, "Re-authorization failed: %v", authErr)
@@ -65,7 +65,6 @@ func (f *Fs) shouldRetry(ctx context.Context, err error) (bool, error) {
 				}
 				return true, err
 			}
-			return false, err
 		case 429:
 			delay := httpErr.RetryAfter()
 			if delay <= 0 {
@@ -101,6 +100,12 @@ func init() {
 			Advanced:  true,
 			Sensitive: true,
 			Hide:      fs.OptionHideBoth,
+		}, {
+			Name:       "totp_secret",
+			Help:       "Optional TOTP seed for unattended Internxt reauthentication. This is as sensitive as a password. Leave empty to enter one-time codes manually.",
+			Sensitive:  true,
+			IsPassword: true,
+			Advanced:   true,
 		}, {
 			Name:     "skip_hash_validation",
 			Default:  true,
@@ -163,6 +168,14 @@ func Config(ctx context.Context, name string, m configmap.Mapper, configIn fs.Co
 		}
 
 		if loginResp.TFA {
+			if raw, _ := m.Get("totp_secret"); raw != "" {
+				code, err := generateTOTPCode(revealTOTPSecret(raw))
+				if err != nil {
+					return nil, fmt.Errorf("invalid configured TOTP seed: %w", err)
+				}
+				m.Set("2fa_code", code)
+				return fs.ConfigGoto("login")
+			}
 			return fs.ConfigInput("2fa", "config_2fa", "Two-factor authentication code")
 		}
 
@@ -212,6 +225,7 @@ type Options struct {
 	Email              string               `config:"email"`
 	Pass               string               `config:"pass"`
 	TwoFA              string               `config:"2fa"`
+	TOTPSecret         string               `config:"totp_secret"`
 	Mnemonic           string               `config:"mnemonic"`
 	SkipHashValidation bool                 `config:"skip_hash_validation"`
 	UploadCutoff       fs.SizeSuffix        `config:"upload_cutoff"`
@@ -222,19 +236,20 @@ type Options struct {
 
 // Fs represents an Internxt remote
 type Fs struct {
-	name         string
-	root         string
-	opt          Options
-	m            configmap.Mapper
-	dirCache     *dircache.DirCache
-	cfg          *config.Config
-	features     *fs.Features
-	pacer        *fs.Pacer
-	tokenRenewer *oauthutil.Renew
-	bridgeUser   string
-	userID       string
-	authMu       sync.Mutex
-	authFailed   bool
+	name            string
+	root            string
+	opt             Options
+	m               configmap.Mapper
+	dirCache        *dircache.DirCache
+	cfg             *config.Config
+	features        *fs.Features
+	pacer           *fs.Pacer
+	tokenRenewer    *oauthutil.Renew
+	bridgeUser      string
+	userID          string
+	authMu          sync.Mutex
+	authFailCount   int
+	nextAuthAllowed time.Time
 }
 
 // Object holds the data for a remote file object
@@ -291,7 +306,10 @@ func NewFs(ctx context.Context, name, root string, m configmap.Mapper) (fs.Fs, e
 	}
 
 	if opt.Mnemonic == "" {
-		return nil, errors.New("mnemonic is required - please run: rclone config reconnect " + name + ":")
+		if err := bootstrapLogin(ctx, name, m, opt); err != nil {
+			return nil, err
+		}
+		opt.Mnemonic, _ = m.Get("mnemonic")
 	}
 
 	var err error
@@ -391,9 +409,12 @@ func NewFs(ctx context.Context, name, root string, m configmap.Mapper) (fs.Fs, e
 
 	if ts != nil {
 		f.tokenRenewer = oauthutil.NewRenew(f.String(), ts, func() error {
-			f.authMu.Lock()
-			defer f.authMu.Unlock()
-			return f.refreshOrReLogin(ctx)
+			if err := f.reAuthorize(ctx); err != nil {
+				return err
+			}
+			ts.Invalidate()
+			_, err := ts.Token()
+			return err
 		})
 		f.tokenRenewer.Start()
 	}

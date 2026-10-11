@@ -340,6 +340,10 @@ github.com/jcmturner/rpc/v2 v2.0.3 h1:7FXXj8Ti1IaVFpSAziCZWNzbNuZmnvw/i6CqLNdWfZ
 github.com/jcmturner/rpc/v2 v2.0.3/go.mod h1:VUJYCIDm3PVOEHw8sgt091/20OJjskO/YJki3ELg/Hc=
 github.com/jlaffaye/ftp v0.2.1-0.20251026020404-6602e981a1bb h1:6vkM8gO+zFV2m21QzGYyUSq5TP0VQgP2Xz3UQyCN2kI=
 github.com/jlaffaye/ftp v0.2.1-0.20251026020404-6602e981a1bb/go.mod h1:H1+whwD0Qe3YOunlXIWhh3rlvzW5cZfkMDYGQPg+KAM=
+github.com/jomplox/Proton-API-Bridge v1.0.6-0.20260907163050-6f7fc6530d4a h1:ITLZ6OGn1X3lcQD1Vh3J655Vrk9igDWbk/bc059IdtA=
+github.com/jomplox/Proton-API-Bridge v1.0.6-0.20260907163050-6f7fc6530d4a/go.mod h1:vCeOPhlXzevN0AFojgh1zsjhetiShy/ArvJ/xkFUDWk=
+github.com/jomplox/go-proton-api v1.0.5-0.20260907162606-9dcca00ba1dc h1:yMj9021iQCZc+qkwx/JQWY/kZtb0Z4zRf/xr+aweJC8=
+github.com/jomplox/go-proton-api v1.0.5-0.20260907162606-9dcca00ba1dc/go.mod h1:QAlkFfswzrBuxvCORWV8rZdddg52hahMN98CFWoFW1E=
 github.com/josephspurrier/goversioninfo v1.7.0 h1:LQzXOlVm/CtbwJ9/UHl5a2HT0BjcLAwid5gqGd7ZUJ8=
 github.com/josephspurrier/goversioninfo v1.7.0/go.mod h1:z9y0r2G6g5jwSJaFE0cxW9to0aeIibK7UYeLx53aQRU=
 github.com/json-iterator/go v1.1.12 h1:PV8peI4a0ysnczrg+LtxykD8LfKY9ML6u2jnxaEnrnM=

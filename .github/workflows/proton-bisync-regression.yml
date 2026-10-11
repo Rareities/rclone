@@ -1,0 +1,36 @@
+name: Proton and bisync regression
+on:
+  pull_request:
+    paths:
+      - 'backend/protondrive/**'
+      - 'backend/internxt/**'
+      - 'cmd/bisync/**'
+      - 'third_party/**'
+      - 'go.mod'
+      - 'go.sum'
+      - '.github/workflows/proton-bisync-regression.yml'
+  push:
+    branches:
+      - 'feat/proton-bisync*'
+permissions:
+  contents: read
+jobs:
+  regression:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Backend and bisync scenarios
+        run: go test ./backend/protondrive ./backend/internxt ./cmd/bisync -count=1
+      - name: Companion module local tests
+        run: go test github.com/rclone/Proton-API-Bridge github.com/rclone/Proton-API-Bridge/common github.com/rclone/go-proton-api -run 'TestAuthenticatedName|TestAuth.*Refresh|TestLogin.*Refresh|Test.*Block' -count=1
+      - name: Concurrent ownership and metadata checks
+        run: go test -race ./backend/protondrive ./cmd/bisync -run 'TestSession|TestRequireChecksum|TestLockfile' -count=1
+      - name: Static checks
+        run: go vet ./backend/protondrive ./backend/internxt ./cmd/bisync

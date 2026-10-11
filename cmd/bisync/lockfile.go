@@ -9,6 +9,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/gofrs/flock"
 	"github.com/rclone/rclone/cmd/bisync/bilib"
 	"github.com/rclone/rclone/fs"
 	"github.com/rclone/rclone/lib/terminal"
@@ -17,6 +18,9 @@ import (
 const basicallyforever = fs.Duration(200 * 365 * 24 * time.Hour)
 
 type lockFileOpt struct {
+	guard       *flock.Flock
+	ownedFile   os.FileInfo
+	cleanupMu   sync.Mutex
 	stopRenewal func()
 	data        struct {
 		Session     string
@@ -28,6 +32,23 @@ type lockFileOpt struct {
 
 func (b *bisyncRun) setLockFile() (err error) {
 	b.lockFile = ""
+	// The guard inode is deliberately retained. Removing an OS lock file can
+	// let separate processes lock different inodes under the same pathname.
+	guard := flock.New(b.basePath + ".lck-guard")
+	locked, err := guard.TryLock()
+	if err != nil {
+		return fmt.Errorf("cannot acquire bisync guard: %w", err)
+	}
+	if !locked {
+		return fmt.Errorf("another bisync run owns the state for %s", b.basePath)
+	}
+	b.lockFileOpt.guard = guard
+	defer func() {
+		if err != nil {
+			_ = guard.Unlock()
+			b.lockFileOpt.guard = nil
+		}
+	}()
 	b.setLockFileExpiration()
 	if !b.opt.DryRun {
 		b.lockFile = b.basePath + ".lck"
@@ -38,10 +59,26 @@ func (b *bisyncRun) setLockFile() (err error) {
 				errTip += fmt.Sprintf(Color(terminal.HiRedFg, "rclone deletefile \"%s\""), b.lockFile)
 				return fmt.Errorf(Color(terminal.RedFg, "prior lock file found: %s \n")+errTip, Color(terminal.HiYellowFg, b.lockFile))
 			}
+			// Expiration cannot evict a live updated process: it still owns guard.
+			if err = os.Remove(b.lockFile); err != nil {
+				return fmt.Errorf("cannot remove expired lock file: %w", err)
+			}
 		}
 
 		pidStr := []byte(strconv.Itoa(os.Getpid()))
-		if err = os.WriteFile(b.lockFile, pidStr, bilib.PermSecure); err != nil {
+		file, openErr := os.OpenFile(b.lockFile, os.O_CREATE|os.O_EXCL|os.O_WRONLY, bilib.PermSecure)
+		if openErr != nil {
+			return fmt.Errorf("cannot exclusively create lock file: %w", openErr)
+		}
+		b.lockFileOpt.ownedFile, err = file.Stat()
+		if err == nil {
+			_, err = file.Write(pidStr)
+		}
+		closeErr := file.Close()
+		if err == nil {
+			err = closeErr
+		}
+		if err != nil {
 			return fmt.Errorf(Color(terminal.RedFg, "cannot create lock file: %s: %w"), b.lockFile, err)
 		}
 		fs.Debugf(nil, "Lock file created: %s", b.lockFile)
@@ -52,9 +89,26 @@ func (b *bisyncRun) setLockFile() (err error) {
 }
 
 func (b *bisyncRun) removeLockFile() (err error) {
+	b.lockFileOpt.cleanupMu.Lock()
+	defer b.lockFileOpt.cleanupMu.Unlock()
+	defer func() {
+		if guard := b.lockFileOpt.guard; guard != nil {
+			if unlockErr := guard.Unlock(); err == nil {
+				err = unlockErr
+			}
+			b.lockFileOpt.guard = nil
+		}
+	}()
 	if b.lockFile != "" {
-		b.lockFileOpt.stopRenewal()
-		err = os.Remove(b.lockFile)
+		if b.lockFileOpt.stopRenewal != nil {
+			b.lockFileOpt.stopRenewal()
+		}
+		current, statErr := os.Stat(b.lockFile)
+		if statErr == nil && b.lockFileOpt.ownedFile != nil && os.SameFile(current, b.lockFileOpt.ownedFile) {
+			err = os.Remove(b.lockFile)
+		} else if !os.IsNotExist(statErr) {
+			err = fmt.Errorf("refusing to remove a bisync lock no longer owned by this run: %s", b.lockFile)
+		}
 		if err == nil {
 			fs.Debugf(nil, "Lock file removed: %s", b.lockFile)
 		} else {
@@ -82,11 +136,32 @@ func (b *bisyncRun) renewLockFile() {
 		b.lockFileOpt.data.TimeRenewed = time.Now()
 		b.lockFileOpt.data.TimeExpires = time.Now().Add(time.Duration(b.opt.MaxLock))
 
-		// save data file
-		df, err := os.Create(b.lockFile)
-		b.handleErr(b.lockFile, "error renewing lock file", err, true, true)
-		b.handleErr(b.lockFile, "error encoding JSON to lock file", json.NewEncoder(df).Encode(b.lockFileOpt.data), true, true)
-		b.handleErr(b.lockFile, "error closing lock file", df.Close(), true, true)
+		// Open without truncating, then prove ownership before touching contents.
+		df, err := os.OpenFile(b.lockFile, os.O_WRONLY, bilib.PermSecure)
+		if err != nil {
+			b.handleErr(b.lockFile, "error renewing lock file", err, true, true)
+			return
+		}
+		defer func() { _ = df.Close() }()
+		info, err := df.Stat()
+		if err != nil || b.lockFileOpt.ownedFile == nil || !os.SameFile(info, b.lockFileOpt.ownedFile) {
+			b.handleErr(b.lockFile, "lock ownership changed", fmt.Errorf("refusing to renew a different lock file"), true, true)
+			return
+		}
+		data, err := json.Marshal(b.lockFileOpt.data)
+		if err == nil {
+			_, err = df.Write(data)
+		}
+		if err == nil {
+			err = df.Truncate(int64(len(data)))
+		}
+		if err == nil {
+			err = df.Sync()
+		}
+		if err != nil {
+			b.handleErr(b.lockFile, "error renewing lock data", err, true, true)
+			return
+		}
 		if b.opt.MaxLock < basicallyforever {
 			fs.Infof(nil, Color(terminal.HiBlueFg, "lock file renewed for %v. New expiration: %v"), b.opt.MaxLock, b.lockFileOpt.data.TimeExpires)
 		}
@@ -96,7 +171,10 @@ func (b *bisyncRun) renewLockFile() {
 func (b *bisyncRun) lockFileIsExpired() bool {
 	if b.lockFile != "" && bilib.FileExists(b.lockFile) {
 		rdf, err := os.Open(b.lockFile)
-		b.handleErr(b.lockFile, "error reading lock file", err, true, true)
+		if err != nil {
+			b.handleErr(b.lockFile, "error reading lock file", err, true, true)
+			return false
+		}
 		dec := json.NewDecoder(rdf)
 		var decodeErr error
 		for {
@@ -151,8 +229,9 @@ func (b *bisyncRun) startLockRenewal() func() {
 			}
 		}
 	})
+	var stopOnce sync.Once
 	return func() {
-		close(stopLockRenewal)
+		stopOnce.Do(func() { close(stopLockRenewal) })
 		wg.Wait()
 	}
 }

@@ -55,6 +55,14 @@ func (b *bisyncRun) setCompareDefaults(ctx context.Context) (err error) {
 	if err != nil {
 		return err
 	}
+	if b.opt.RequireChecksum {
+		if !b.opt.Compare.Checksum || !b.opt.Compare.Size || !ci.CheckSum || ci.IgnoreChecksum || ci.IgnoreSize || b.opt.IgnoreListingChecksum || b.opt.Compare.NoSlowHash || b.opt.Compare.SlowHashSyncOnly || b.opt.Compare.DownloadHash {
+			return errors.New("--require-checksum requires size and native checksum comparison without checksum exclusions or --download-hash")
+		}
+		if b.fs1.Hashes().Overlap(b.fs2.Hashes()).GetOne() == hash.None {
+			return errors.New("--require-checksum: both paths must support a common native checksum")
+		}
+	}
 
 	if b.fs1.Features().SlowHash || b.fs2.Features().SlowHash {
 		b.opt.Compare.SlowHashDetected = true
