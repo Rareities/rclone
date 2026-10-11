@@ -55,6 +55,14 @@ try {
         $provenance | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath (Join-Path $stage 'provenance.json') -Encoding utf8
         $archive = Join-Path $OutputDirectory "rclone-$Tag-$target.zip"
         [IO.Compression.ZipFile]::CreateFromDirectory((Split-Path $stage -Parent), $archive, [IO.Compression.CompressionLevel]::Optimal, $false)
+        if($parts[0] -ne 'windows') {
+            $zip = [IO.Compression.ZipFile]::Open($archive, [IO.Compression.ZipArchiveMode]::Update)
+            try {
+                $entry = $zip.GetEntry("rclone-$Tag-$target/$name")
+                if(!$entry){throw 'The native executable is missing from the archive'}
+                $entry.ExternalAttributes = [BitConverter]::ToInt32([BitConverter]::GetBytes([uint32]2179792896),0)
+            } finally { $zip.Dispose() }
+        }
         $results.Add([pscustomobject]@{name=[IO.Path]::GetFileName($archive);sha256=(Get-FileHash -LiteralPath $archive -Algorithm SHA256).Hash.ToLowerInvariant();bytes=(Get-Item -LiteralPath $archive).Length;commit=$sha;target=$target})
     }
     $results | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath (Join-Path $OutputDirectory 'release-manifest.json') -Encoding utf8

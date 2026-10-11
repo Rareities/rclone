@@ -38,6 +38,10 @@ jobs:
           go vet ./backend/protondrive/... ./backend/internxt/... ./cmd/bisync/...
       - name: Build test CLI
         run: go build -mod=readonly -tags noselfupdate -o "$RUNNER_TEMP/rclone-acceptance" .
+      - name: Known reachable Go vulnerability check
+        run: |
+          go install golang.org/x/vuln/cmd/govulncheck@v1.9.0
+          govulncheck ./...
       - name: Complete disposable CLI acceptance
         shell: pwsh
         run: ./scripts/verify-bisync-integration.ps1 -Rclone "$env:RUNNER_TEMP/rclone-acceptance" -WorkRoot "$env:RUNNER_TEMP/bisync-acceptance"
