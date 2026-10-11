@@ -11,86 +11,176 @@ on:
         options: [both, official, oss]
         default: both
 
+# Candidate code runs only in read-only, no-secret jobs.
 permissions:
-  contents: write
-  pull-requests: write
+  contents: read
 
 concurrency:
   group: dual-upstream-review
   cancel-in-progress: false
 
 jobs:
-  official:
-    if: github.event_name == 'schedule' || inputs.source == 'both' || inputs.source == 'official'
+  official-prepare:
+    if: github.repository == 'Rareities/rclone' && (github.event_name == 'schedule' || inputs.source == 'both' || inputs.source == 'official')
     runs-on: ubuntu-latest
     timeout-minutes: 50
+    permissions:
+      contents: read
+    outputs:
+      changed: ${{ steps.prepare.outputs.changed }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.0
         with:
+          ref: master
           fetch-depth: 0
           persist-credentials: false
-      - name: Prepare candidate without write credentials
+      - name: Prepare official candidate
         id: prepare
         run: bash .github/scripts/review-upstreams.sh official
-      - uses: actions/setup-go@v6
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5.6.0
         if: steps.prepare.outputs.changed == 'true'
         with:
           go-version-file: go.mod
-          cache: true
-      - name: Test selected source
+          cache: false
+      - name: Test candidate
         if: steps.prepare.outputs.changed == 'true'
         env:
           GOFLAGS: -mod=readonly
         run: |
           go test ./backend/protondrive/... ./cmd/bisync/...
           go build .
-      - name: Open or update draft PR
+      - name: Package tested Git objects and review description
         if: steps.prepare.outputs.changed == 'true'
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        shell: bash
         run: |
-          git -c http.extraheader="AUTHORIZATION: basic $(printf 'x-access-token:%s' "$GH_TOKEN" | base64 -w0)" fetch origin +refs/heads/automation/review-official-rclone:refs/remotes/origin/automation/review-official-rclone || true
-          git -c http.extraheader="AUTHORIZATION: basic $(printf 'x-access-token:%s' "$GH_TOKEN" | base64 -w0)" push --force-with-lease origin HEAD:refs/heads/automation/review-official-rclone
-          existing="$(gh pr list --head automation/review-official-rclone --base master --state open --json number --jq '.[0].number // empty')"
-          if [ -z "$existing" ]; then
-            gh pr create --draft --base master --head automation/review-official-rclone --title 'chore: review official rclone master' --body-file /tmp/upstream-pr.md
-          else
-            gh pr edit "$existing" --body-file /tmp/upstream-pr.md
-          fi
-  oss:
-    if: github.event_name == 'schedule' || inputs.source == 'both' || inputs.source == 'oss'
+          set -euo pipefail
+          out="$RUNNER_TEMP/upstream-review"
+          mkdir -p "$out"
+          base_sha="$(git rev-parse master)"
+          official_sha="$(awk '$1=="Official" && $2=="master" && $3=="commit:" {print $4}' /tmp/upstream-pr.md)"
+          [[ "$base_sha" =~ ^[a-f0-9]{40}$ && "$official_sha" =~ ^[a-f0-9]{40}$ ]]
+          cp /tmp/upstream-pr.md "$out/pr-body.md"
+          printf 'official\n%s\n%s\nnone\nnone\n' "$base_sha" "$official_sha" > "$out/refs.txt"
+          git bundle create "$out/candidate.bundle" refs/heads/automation/review-official-rclone "^$base_sha"
+          test "$(wc -c < "$out/candidate.bundle")" -le 104857600
+          test "$(wc -c < "$out/pr-body.md")" -le 16384
+      - name: Export tested candidate as untrusted data
+        if: steps.prepare.outputs.changed == 'true'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: official-review-candidate
+          path: ${{ runner.temp }}/upstream-review/
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 1
+
+  oss-prepare:
+    if: github.repository == 'Rareities/rclone' && (github.event_name == 'schedule' || inputs.source == 'both' || inputs.source == 'oss')
     runs-on: ubuntu-latest
     timeout-minutes: 50
+    permissions:
+      contents: read
+    outputs:
+      changed: ${{ steps.prepare.outputs.changed }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.0
         with:
+          ref: master
           fetch-depth: 0
           persist-credentials: false
-      - name: Prepare Forgejo Proton candidate without write credentials
+      - name: Prepare OSS candidate against official master
         id: prepare
         run: bash .github/scripts/review-upstreams.sh oss
-      - uses: actions/setup-go@v6
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5.6.0
         if: steps.prepare.outputs.changed == 'true'
         with:
           go-version-file: go.mod
-          cache: true
-      - name: Test selected source
+          cache: false
+      - name: Test candidate
         if: steps.prepare.outputs.changed == 'true'
         env:
           GOFLAGS: -mod=readonly
         run: |
           go test ./backend/protondrive/... ./cmd/bisync/...
           go build .
-      - name: Open or update draft PR
+      - name: Package tested Git objects and review description
         if: steps.prepare.outputs.changed == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          out="$RUNNER_TEMP/upstream-review"
+          mkdir -p "$out"
+          base_sha="$(git rev-parse master)"
+          official_sha="$(awk '$1=="Official" && $2=="master" && $3=="commit:" {print $4}' /tmp/upstream-pr.md)"
+          oss_sha="$(awk '$1=="OSS" && $2=="Forgejo" && $3=="commit:" {print $4}' /tmp/upstream-pr.md)"
+          oss_ref="$(git ls-remote --symref oss HEAD | awk '$1=="ref:" && $3=="HEAD" {print $2}')"
+          [[ "$base_sha" =~ ^[a-f0-9]{40}$ && "$official_sha" =~ ^[a-f0-9]{40}$ && "$oss_sha" =~ ^[a-f0-9]{40}$ ]]
+          [[ "$oss_ref" =~ ^refs/heads/[A-Za-z0-9._/-]+$ ]]
+          cp /tmp/upstream-pr.md "$out/pr-body.md"
+          printf 'oss\n%s\n%s\n%s\n%s\n' "$base_sha" "$official_sha" "$oss_ref" "$oss_sha" > "$out/refs.txt"
+          git bundle create "$out/candidate.bundle" refs/heads/automation/review-oss-protondrive "^$base_sha"
+          test "$(wc -c < "$out/candidate.bundle")" -le 104857600
+          test "$(wc -c < "$out/pr-body.md")" -le 16384
+      - name: Export tested candidate as untrusted data
+        if: steps.prepare.outputs.changed == 'true'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: oss-review-candidate
+          path: ${{ runner.temp }}/upstream-review/
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 1
+
+  official-publish:
+    if: github.repository == 'Rareities/rclone' && github.ref == 'refs/heads/master' && needs.official-prepare.outputs.changed == 'true'
+    needs: [official-prepare]
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: write
+      pull-requests: write
+    steps:
+      - name: Checkout trusted publisher from master
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.0
+        with:
+          ref: master
+          fetch-depth: 0
+          persist-credentials: true
+      - name: Download candidate without executing it
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: official-review-candidate
+          path: ${{ runner.temp }}/review-artifact
+      - name: Validate expected refs and push candidate objects
+        run: bash .github/scripts/publish-upstream-review.sh official validate-push
+      - name: Create or update draft PR
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          git -c http.extraheader="AUTHORIZATION: basic $(printf 'x-access-token:%s' "$GH_TOKEN" | base64 -w0)" fetch origin +refs/heads/automation/review-oss-protondrive:refs/remotes/origin/automation/review-oss-protondrive || true
-          git -c http.extraheader="AUTHORIZATION: basic $(printf 'x-access-token:%s' "$GH_TOKEN" | base64 -w0)" push --force-with-lease origin HEAD:refs/heads/automation/review-oss-protondrive
-          existing="$(gh pr list --head automation/review-oss-protondrive --base master --state open --json number --jq '.[0].number // empty')"
-          if [ -z "$existing" ]; then
-            gh pr create --draft --base master --head automation/review-oss-protondrive --title 'chore: review OSS Proton Drive fixes' --body-file /tmp/upstream-pr.md
-          else
-            gh pr edit "$existing" --body-file /tmp/upstream-pr.md
-          fi
+        run: bash .github/scripts/publish-upstream-review.sh official pr
+
+  oss-publish:
+    if: github.repository == 'Rareities/rclone' && github.ref == 'refs/heads/master' && needs.oss-prepare.outputs.changed == 'true'
+    needs: [oss-prepare]
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: write
+      pull-requests: write
+    steps:
+      - name: Checkout trusted publisher from master
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.0
+        with:
+          ref: master
+          fetch-depth: 0
+          persist-credentials: true
+      - name: Download candidate without executing it
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: oss-review-candidate
+          path: ${{ runner.temp }}/review-artifact
+      - name: Validate expected refs and push candidate objects
+        run: bash .github/scripts/publish-upstream-review.sh oss validate-push
+      - name: Create or update draft PR
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: bash .github/scripts/publish-upstream-review.sh oss pr
