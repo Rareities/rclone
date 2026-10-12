@@ -166,48 +166,44 @@ func (protonDrive *ProtonDrive) downloadFile(ctx context.Context, link *proton.L
 		isEOF: false,
 	}
 
-	useFallbackDownload := false
-	if fileSystemAttrs != nil {
-		// based on offset, infer the nextRevision (0-based)
-		if fileSystemAttrs.BlockSizes == nil {
-			useFallbackDownload = true
-		} else {
-			// infer nextRevision
-			totalBytes := int64(0)
-			for i := 0; i < len(fileSystemAttrs.BlockSizes); i++ {
-				prevTotalBytes := totalBytes
-				totalBytes += fileSystemAttrs.BlockSizes[i]
-				if offset <= totalBytes {
-					offset = offset - prevTotalBytes
-					reader.nextRevision = i
-					break
-				}
-			}
-
-			// download will start from the specified block
-			n, err := io.CopyN(io.Discard, reader, offset)
-			if err != nil {
-				_ = reader.Close()
-				return nil, 0, nil, err
-			}
-			if int64(n) != offset {
-				_ = reader.Close()
-				return nil, 0, nil, ErrSeekOffsetAfterSkippingBlocks
-			}
-		}
-	}
-
-	if useFallbackDownload {
+	if offset > 0 && (fileSystemAttrs == nil || fileSystemAttrs.BlockSizes == nil) {
 		protonDrive.Config.GetLogger().Warnf("Performing inefficient seek as metadata of encrypted file is missing")
-		n, err := io.CopyN(io.Discard, reader, offset)
-		if err != nil {
-			_ = reader.Close()
-			return nil, 0, nil, err
-		}
-		if int64(n) != offset {
-			_ = reader.Close()
-			return nil, 0, nil, ErrSeekOffsetAfterSkippingBlocks
-		}
+	}
+	if err := reader.skipOffset(offset, fileSystemAttrs); err != nil {
+		_ = reader.Close()
+		return nil, 0, nil, err
 	}
 	return reader, link.Size, fileSystemAttrs, nil
+}
+
+
+// skipOffset advances to the requested plaintext byte even for legacy revisions
+// without signed attributes. Otherwise a ranged download could return byte zero.
+func (reader *FileDownloadReader) skipOffset(offset int64, attrs *FileSystemAttrs) error {
+	if offset < 0 {
+		return ErrSeekOffsetAfterSkippingBlocks
+	}
+	if attrs != nil && attrs.BlockSizes != nil {
+		// Skip complete encrypted blocks without downloading their contents.
+		totalBytes := int64(0)
+		for i := 0; i < len(attrs.BlockSizes); i++ {
+			prevTotalBytes := totalBytes
+			totalBytes += attrs.BlockSizes[i]
+			if offset <= totalBytes {
+				offset -= prevTotalBytes
+				reader.nextRevision = i
+				break
+			}
+		}
+	}
+	// Without block sizes, discard from the start rather than silently
+	// ignoring offset. Partial reads and resumed transfers must remain correct.
+	n, err := io.CopyN(io.Discard, reader, offset)
+	if err != nil {
+		return err
+	}
+	if n != offset {
+		return ErrSeekOffsetAfterSkippingBlocks
+	}
+	return nil
 }
