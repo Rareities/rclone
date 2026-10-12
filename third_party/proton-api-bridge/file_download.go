@@ -207,6 +207,9 @@ func (reader *FileDownloadReader) skipOffset(offset int64, attrs *FileSystemAttr
 				break
 			}
 		}
+		if offset > totalBytes {
+			return ErrSeekOffsetAfterSkippingBlocks
+		}
 	}
 	// Without block sizes, discard from the start rather than silently
 	// ignoring offset. Partial reads and resumed transfers must remain correct.
