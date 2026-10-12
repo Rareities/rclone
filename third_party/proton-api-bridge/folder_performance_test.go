@@ -18,10 +18,13 @@ import (
 )
 
 type listingFixture struct {
-	drive          *ProtonDrive
-	children       []proton.Link
-	folderRequests atomic.Int32
-	rootRequests   atomic.Int32
+	drive            *ProtonDrive
+	children         []proton.Link
+	folderRequests   atomic.Int32
+	rootRequests     atomic.Int32
+	revisionRequests atomic.Int32
+	revisionMu       sync.Mutex
+	revisions        map[string]proton.RevisionMetadata
 }
 
 // newListingFixture uses real signed names, node keys and attributes.
@@ -95,21 +98,23 @@ func newListingFixture(t testing.TB, count int) *listingFixture {
 		if file {
 			link.Type = proton.LinkTypeFile
 			link.Size = 999
-			link.FileProperties = &proton.FileProperties{ActiveRevision: proton.RevisionMetadata{SignatureEmail: "revision@example.com"}}
+			link.FileProperties = &proton.FileProperties{ActiveRevision: proton.RevisionMetadata{ID: "rev-" + id, State: proton.RevisionStateActive, SignatureEmail: "revision@example.com"}}
 			attrs, err := json.Marshal(proton.RevisionXAttr{Common: proton.RevisionXAttrCommon{ModificationTime: "2026-10-11T12:00:00Z", Size: 12, Digests: map[string]string{"SHA1": strings.Repeat("A", 40)}, BlockSizes: []int64{12}}})
 			if err != nil {
 				t.Fatal(err)
 			}
 			link.XAttr = encrypt(kr, revisionSigner, attrs)
+			link.FileProperties.ActiveRevision.XAttr = link.XAttr
 		}
 		return link, kr
 	}
 	root, rootKR := makeLink("root", "", "root", share, false)
 	folder, folderKR := makeLink("folder", "root", "folder", rootKR, false)
-	f := &listingFixture{}
+	f := &listingFixture{revisions: make(map[string]proton.RevisionMetadata)}
 	for i := 0; i < count; i++ {
 		link, _ := makeLink(fmt.Sprint(i), "folder", fmt.Sprint(i), folderKR, true)
 		f.children = append(f.children, link)
+		f.revisions["/drive/shares/share/files/"+link.LinkID+"/revisions/"+link.FileProperties.ActiveRevision.ID] = link.FileProperties.ActiveRevision
 	}
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
@@ -127,6 +132,40 @@ func newListingFixture(t testing.TB, count int) *listingFixture {
 			}
 			_ = json.NewEncoder(w).Encode(map[string]any{"Code": 1000, "Links": links})
 		default:
+			if strings.Contains(r.URL.Path, "/files/") && strings.Contains(r.URL.Path, "/revisions") {
+				f.revisionMu.Lock()
+				defer f.revisionMu.Unlock()
+				if strings.HasSuffix(r.URL.Path, "/revisions") {
+					entries := []proton.RevisionMetadata{}
+					for path, metadata := range f.revisions {
+						if strings.HasPrefix(path, r.URL.Path+"/") {
+							entries = append(entries, metadata)
+						}
+					}
+					_ = json.NewEncoder(w).Encode(map[string]any{"Code": 1000, "Revisions": entries})
+					return
+				}
+				if r.Method == http.MethodPut {
+					var req proton.CommitRevisionReq
+					if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+						t.Error(err)
+						http.Error(w, "bad request", 400)
+						return
+					}
+					parts := strings.Split(r.URL.Path, "/")
+					f.revisions[r.URL.Path] = proton.RevisionMetadata{ID: parts[len(parts)-1], State: proton.RevisionStateActive, SignatureEmail: req.SignatureAddress, XAttr: req.XAttr}
+					_ = json.NewEncoder(w).Encode(map[string]any{"Code": 1000})
+					return
+				}
+				if metadata, ok := f.revisions[r.URL.Path]; ok {
+					f.revisionRequests.Add(1)
+					if r.URL.Query().Get("PageSize") != "" && (r.URL.Query().Get("PageSize") != "1" || r.URL.Query().Get("FromBlockIndex") != "1" || r.URL.Query().Get("NoBlockUrls") != "1") {
+						t.Errorf("unexpected metadata query: %s", r.URL.RawQuery)
+					}
+					_ = json.NewEncoder(w).Encode(map[string]any{"Code": 1000, "Revision": metadata})
+					return
+				}
+			}
 			t.Errorf("unexpected request: %s", r.URL.Path)
 			http.Error(w, "unexpected", http.StatusNotFound)
 		}
@@ -191,10 +230,17 @@ func TestListingAttrsFailsClosedAndPreservesMissingAttrs(t *testing.T) {
 				f.children[1].FileProperties.ActiveRevision.SignatureEmail = "test@example.com"
 			case "bad attrs":
 				f.children[1].XAttr = "broken"
+				f.children[1].FileProperties.ActiveRevision.XAttr = "broken"
 			case "bad name":
 				f.children[1].Name = "broken"
 			case "missing attrs":
 				f.children[1].XAttr = ""
+				f.children[1].FileProperties.ActiveRevision.XAttr = ""
+				f.revisionMu.Lock()
+				metadata := f.revisions["/drive/shares/share/files/1/revisions/rev-1"]
+				metadata.XAttr = ""
+				f.revisions["/drive/shares/share/files/1/revisions/rev-1"] = metadata
+				f.revisionMu.Unlock()
 			}
 			entries, err := f.drive.ListDirectoryWithAttrs(context.Background(), "folder")
 			if problem == "missing attrs" {

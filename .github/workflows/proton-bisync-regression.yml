@@ -34,11 +34,11 @@ jobs:
       - name: Backend and bisync scenarios
         run: go test ./backend/protondrive ./backend/internxt ./cmd/bisync/... ./fs/march/... ./fs/config/configmap ./fs/config/configfile ./backend/local/... ./backend/alias/... ./backend/crypt/... ./backend/memory/... ./cmd/serve/http/... ./cmd/serve/webdav/... -count=1
       - name: Companion module local tests
-        run: go test github.com/rclone/Proton-API-Bridge github.com/rclone/Proton-API-Bridge/common github.com/rclone/go-proton-api -run 'TestAuthenticatedName|TestAuth.*Refresh|TestAuthHook|TestAuthPersistence|TestLogin.*Refresh|Test.*Block|TestRequireActiveFolder|TestDistinctDirectoryNames|TestFileDownloadReader|TestNameFixtures|TestListingAttrs|TestActiveRevision' -count=1
+        run: go test github.com/rclone/Proton-API-Bridge github.com/rclone/Proton-API-Bridge/common github.com/rclone/go-proton-api -run 'TestAuthenticatedName|TestAuth.*Refresh|TestAuthHook|TestAuthPersistence|TestLogin.*Refresh|Test.*Block|TestRequireActiveFolder|TestDistinctDirectoryNames|TestFileDownloadReader|TestNameFixtures|TestListingAttrs|TestActiveRevision|TestRevisionMetadataStore' -count=1
       - name: Concurrent ownership and metadata checks
         run: go test -race ./backend/protondrive ./cmd/bisync -run 'TestSession|TestRequireChecksum|TestLockfile' -count=1
       - name: Fresh listing concurrency checks
-        run: go test -race github.com/rclone/Proton-API-Bridge -run 'TestListingAttrs|TestActiveRevision' -count=1
+        run: go test -race github.com/rclone/Proton-API-Bridge -run 'TestListingAttrs|TestActiveRevision|TestRevisionMetadataStore' -count=1
       - name: Static checks
         run: go vet ./backend/protondrive ./backend/internxt ./cmd/bisync ./fs/march ./fs/config/configmap
       - name: Build isolated CLI

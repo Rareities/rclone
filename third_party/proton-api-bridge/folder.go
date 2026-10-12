@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/rclone/go-proton-api"
+	"golang.org/x/sync/errgroup"
 )
 
 type ProtonDirectoryData struct {
@@ -76,19 +77,33 @@ func (protonDrive *ProtonDrive) listDirectory(ctx context.Context, folderLinkID 
 			if err != nil {
 				return nil, err
 			}
-			var attrs *FileSystemAttrs
-			if withAttrs && childrenLinks[i].Type == proton.LinkTypeFile {
-				attrs, err = protonDrive.activeRevisionAttrsWithParent(&childrenLinks[i], folderLinkKR)
-				if err != nil {
-					return nil, err
-				}
-			}
 			ret = append(ret, &ProtonDirectoryData{
 				Link:     &childrenLinks[i],
 				Name:     name,
 				IsFolder: childrenLinks[i].Type == proton.LinkTypeFolder,
-				Attrs:    attrs,
 			})
+		}
+		if err := requireDistinctDirectoryNames(ret); err != nil {
+			return nil, err
+		}
+		if withAttrs {
+			group, metadataCtx := errgroup.WithContext(ctx)
+			group.SetLimit(4)
+			for _, entry := range ret {
+				if entry.IsFolder {
+					continue
+				}
+				group.Go(func() error {
+					attrs, err := protonDrive.activeRevisionAttrsWithParent(metadataCtx, entry.Link, folderLinkKR)
+					if err == nil {
+						entry.Attrs = attrs
+					}
+					return err
+				})
+			}
+			if err := group.Wait(); err != nil {
+				return nil, err
+			}
 		}
 	}
 

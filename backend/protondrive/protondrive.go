@@ -192,7 +192,11 @@ performing operations to the mount point. The event system, which is the proton
 API system that provides visibility of what has changed on the drive, is yet 
 to be implemented, so updates from other clients won’t be reflected in the 
 cache. Thus, if there are concurrent clients accessing the same mount point, 
-then we might have a problem with caching the stale data.`,
+then we might have a problem with caching the stale data.
+
+Disabling this option fetches directory links and active revision IDs afresh.
+Authenticated metadata for an identified revision is independently reused in
+a bounded memory cache and verified with current keys on every read.`,
 			Advanced: true,
 			Default:  true,
 		}},

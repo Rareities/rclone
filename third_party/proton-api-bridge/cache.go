@@ -296,6 +296,7 @@ func (protonDrive *ProtonDrive) removeLinkIDFromCache(linkID string, includingCh
 }
 
 func (protonDrive *ProtonDrive) ClearCache() {
+	protonDrive.revisionMetadata.clear()
 	if !protonDrive.cache.enableCaching {
 		return
 	}

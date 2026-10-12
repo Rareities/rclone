@@ -464,6 +464,9 @@ func (protonDrive *ProtonDrive) commitNewRevision(ctx context.Context, nodeKR *c
 	if err != nil {
 		return err
 	}
+	protonDrive.revisionMetadata.put(revisionMetadataKey(protonDrive.MainShare.ShareID, linkID, revisionID), proton.RevisionMetadata{
+		ID: revisionID, SignatureEmail: protonDrive.signatureAddress, XAttr: commitRevisionReq.XAttr,
+	})
 
 	return nil
 }

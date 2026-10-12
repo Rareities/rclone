@@ -27,6 +27,7 @@ type ProtonDrive struct {
 	signatureAddress string
 
 	cache                *cache
+	revisionMetadata     revisionMetadataStore
 	blockUploadSemaphore *semaphore.Weighted
 	blockCryptoSemaphore *semaphore.Weighted
 }

@@ -49,7 +49,7 @@ func TestListingAttrsPreferExplicitActiveRevision(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	listed, err := fixture.drive.activeRevisionAttrsWithKey(&link, nodeKR)
+	listed, err := fixture.drive.activeRevisionAttrsWithKey(context.Background(), &link, nodeKR)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -67,7 +67,7 @@ func TestListingAttrsRejectInvalidPreferredRevision(t *testing.T) {
 		t.Fatal(err)
 	}
 	link.FileProperties.ActiveRevision.XAttr = "invalid preferred revision ciphertext"
-	if _, err := fixture.drive.activeRevisionAttrsWithKey(&link, nodeKR); err == nil {
+	if _, err := fixture.drive.activeRevisionAttrsWithKey(context.Background(), &link, nodeKR); err == nil {
 		t.Fatal("invalid explicit active revision metadata was silently replaced by link attrs")
 	}
 }
@@ -82,6 +82,7 @@ func TestActiveRevisionUsesItsOwnSignerAndRejectsChangedIdentity(t *testing.T) {
 	// The source link lacks a revision ID, so the fetched active revision is the
 	// authoritative metadata snapshot. Its signer differs from the older link hint.
 	link.FileProperties.ActiveRevision.SignatureEmail = "test@example.com"
+	link.FileProperties.ActiveRevision.ID = ""
 	revision := proton.Revision{RevisionMetadata: proton.RevisionMetadata{ID: "fresh", State: proton.RevisionStateActive, SignatureEmail: "revision@example.com", XAttr: signedRevisionAttrs(t, fixture.drive, nodeKR, "4f1e4374a22a9e62b2b263b70396eea4b513b30e")}}
 	activeID := "fresh"
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

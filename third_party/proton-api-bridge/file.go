@@ -56,11 +56,11 @@ func (protonDrive *ProtonDrive) GetActiveRevisionAttrs(ctx context.Context, link
 	if err != nil {
 		return nil, err
 	}
-	return protonDrive.activeRevisionAttrsWithKey(link, nodeKR)
+	return protonDrive.activeRevisionAttrsWithKey(ctx, link, nodeKR)
 }
 
 // activeRevisionAttrsWithParent uses the verified parent from the same fresh listing.
-func (protonDrive *ProtonDrive) activeRevisionAttrsWithParent(link *proton.Link, parentKR *crypto.KeyRing) (*FileSystemAttrs, error) {
+func (protonDrive *ProtonDrive) activeRevisionAttrsWithParent(ctx context.Context, link *proton.Link, parentKR *crypto.KeyRing) (*FileSystemAttrs, error) {
 	verificationKR, err := protonDrive.getSignatureVerificationKeyring([]string{link.SignatureEmail})
 	if err != nil {
 		return nil, err
@@ -69,18 +69,59 @@ func (protonDrive *ProtonDrive) activeRevisionAttrsWithParent(link *proton.Link,
 	if err != nil {
 		return nil, err
 	}
-	return protonDrive.activeRevisionAttrsWithKey(link, nodeKR)
+	return protonDrive.activeRevisionAttrsWithKey(ctx, link, nodeKR)
 }
 
-func (protonDrive *ProtonDrive) activeRevisionAttrsWithKey(link *proton.Link, nodeKR *crypto.KeyRing) (*FileSystemAttrs, error) {
+func (protonDrive *ProtonDrive) activeRevisionAttrsWithKey(ctx context.Context, link *proton.Link, nodeKR *crypto.KeyRing) (*FileSystemAttrs, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	if link.FileProperties == nil {
 		return nil, fmt.Errorf("file %s has no revision properties", link.LinkID)
 	}
 	revisionMetadata := link.FileProperties.ActiveRevision
 	if revisionMetadata.XAttr == "" {
-		revisionMetadata.XAttr = link.XAttr
+		if revisionMetadata.ID == "" {
+			revisions, err := protonDrive.GetRevisions(ctx, link, proton.RevisionStateActive)
+			if err != nil {
+				return nil, err
+			}
+			if len(revisions) != 1 || revisions[0].ID == "" {
+				return nil, ErrCantFindActiveRevision
+			}
+			revisionMetadata = *revisions[0]
+		}
+		if revisionMetadata.XAttr == "" {
+			expectedRevisionID := revisionMetadata.ID
+			key := revisionMetadataKey(protonDrive.MainShare.ShareID, link.LinkID, revisionMetadata.ID)
+			var err error
+			revisionMetadata, err = protonDrive.revisionMetadata.load(ctx, key, func() (proton.RevisionMetadata, error) {
+				metadata, err := protonDrive.c.GetRevisionMetadata(ctx, protonDrive.MainShare.ShareID, link.LinkID, expectedRevisionID)
+				if err != nil {
+					return metadata, err
+				}
+				if metadata.ID != expectedRevisionID {
+					return metadata, fmt.Errorf("revision metadata does not match requested revision for file %s", link.LinkID)
+				}
+				_, err = protonDrive.revisionAttrsWithKey(metadata, nodeKR)
+				return metadata, err
+			})
+			if err != nil {
+				return nil, err
+			}
+		}
 	}
+	attrs, err := protonDrive.revisionAttrsWithKey(revisionMetadata, nodeKR)
+	if ctx.Err() != nil {
+		return nil, ctx.Err()
+	}
+	if err == nil {
+		protonDrive.revisionMetadata.put(revisionMetadataKey(protonDrive.MainShare.ShareID, link.LinkID, revisionMetadata.ID), revisionMetadata)
+	}
+	return attrs, err
+}
 
+func (protonDrive *ProtonDrive) revisionAttrsWithKey(revisionMetadata proton.RevisionMetadata, nodeKR *crypto.KeyRing) (*FileSystemAttrs, error) {
 	signatureVerificationKR, err := protonDrive.getSignatureVerificationKeyring([]string{revisionMetadata.SignatureEmail})
 	if err != nil {
 		return nil, err
@@ -148,34 +189,13 @@ func (protonDrive *ProtonDrive) GetActiveRevisionWithAttrs(ctx context.Context, 
 		return nil, nil, err
 	}
 
-	signatureVerificationKR, err := protonDrive.getSignatureVerificationKeyring([]string{revision.SignatureEmail})
+	attrs, err := protonDrive.revisionAttrsWithKey(revision.RevisionMetadata, nodeKR)
 	if err != nil {
 		return nil, nil, err
 	}
-	revisionXAttrCommon, err := revision.GetDecXAttrString(signatureVerificationKR, nodeKR)
-	if err != nil {
+	if err := ctx.Err(); err != nil {
 		return nil, nil, err
 	}
-	if revisionXAttrCommon == nil {
-		return &revision, nil, nil
-	}
-
-	modificationTime, err := iso8601.ParseString(revisionXAttrCommon.ModificationTime)
-	if err != nil {
-		return nil, nil, err
-	}
-
-	var sha1Hash string
-	if val, ok := revisionXAttrCommon.Digests["SHA1"]; ok {
-		sha1Hash = val
-	} else {
-		sha1Hash = ""
-	}
-
-	return &revision, &FileSystemAttrs{
-		ModificationTime: modificationTime,
-		Size:             revisionXAttrCommon.Size,
-		BlockSizes:       revisionXAttrCommon.BlockSizes,
-		Digests:          sha1Hash,
-	}, nil
+	protonDrive.revisionMetadata.put(revisionMetadataKey(protonDrive.MainShare.ShareID, link.LinkID, revision.ID), revision.RevisionMetadata)
+	return &revision, attrs, nil
 }
