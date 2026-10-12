@@ -197,6 +197,9 @@ func (reader *FileDownloadReader) skipOffset(offset int64, attrs *FileSystemAttr
 		totalBytes := int64(0)
 		for i := 0; i < len(attrs.BlockSizes); i++ {
 			prevTotalBytes := totalBytes
+			if attrs.BlockSizes[i] > int64(^uint64(0)>>1)-totalBytes {
+				return ErrSeekOffsetAfterSkippingBlocks
+			}
 			totalBytes += attrs.BlockSizes[i]
 			if offset <= totalBytes {
 				offset -= prevTotalBytes
