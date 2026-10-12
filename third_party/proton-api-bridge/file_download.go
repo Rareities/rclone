@@ -183,8 +183,14 @@ func (reader *FileDownloadReader) skipOffset(offset int64, attrs *FileSystemAttr
 	if offset < 0 {
 		return ErrSeekOffsetAfterSkippingBlocks
 	}
-	if attrs != nil && attrs.BlockSizes != nil {
+	if attrs != nil && attrs.BlockSizes != nil && len(attrs.BlockSizes) == len(reader.revision.Blocks) {
 		// Skip complete encrypted blocks without downloading their contents.
+		// Reject malformed sizes instead of selecting an incorrect block.
+		for _, size := range attrs.BlockSizes {
+			if size < 0 {
+				return ErrSeekOffsetAfterSkippingBlocks
+			}
+		}
 		totalBytes := int64(0)
 		for i := 0; i < len(attrs.BlockSizes); i++ {
 			prevTotalBytes := totalBytes
