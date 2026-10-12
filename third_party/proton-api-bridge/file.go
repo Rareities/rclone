@@ -77,7 +77,9 @@ func (protonDrive *ProtonDrive) activeRevisionAttrsWithKey(link *proton.Link, no
 		return nil, fmt.Errorf("file %s has no revision properties", link.LinkID)
 	}
 	revisionMetadata := link.FileProperties.ActiveRevision
-	revisionMetadata.XAttr = link.XAttr
+	if revisionMetadata.XAttr == "" {
+		revisionMetadata.XAttr = link.XAttr
+	}
 
 	signatureVerificationKR, err := protonDrive.getSignatureVerificationKeyring([]string{revisionMetadata.SignatureEmail})
 	if err != nil {
@@ -125,10 +127,20 @@ func (protonDrive *ProtonDrive) GetActiveRevisionWithAttrs(ctx context.Context, 
 	if len(revisionsMetadata) != 1 {
 		return nil, nil, ErrCantFindActiveRevision
 	}
+	if revisionsMetadata[0].ID == "" {
+		return nil, nil, fmt.Errorf("active revision has no identity for file %s", link.LinkID)
+	}
+	if link.FileProperties != nil && link.FileProperties.ActiveRevision.ID != "" &&
+		link.FileProperties.ActiveRevision.ID != revisionsMetadata[0].ID {
+		return nil, nil, fmt.Errorf("active revision changed while opening file %s", link.LinkID)
+	}
 
 	revision, err := protonDrive.c.GetRevisionAllBlocks(ctx, protonDrive.MainShare.ShareID, link.LinkID, revisionsMetadata[0].ID)
 	if err != nil {
 		return nil, nil, err
+	}
+	if revision.ID != revisionsMetadata[0].ID {
+		return nil, nil, fmt.Errorf("revision response does not match requested revision for file %s", link.LinkID)
 	}
 
 	nodeKR, err := protonDrive.getLinkKR(ctx, link)
@@ -136,7 +148,7 @@ func (protonDrive *ProtonDrive) GetActiveRevisionWithAttrs(ctx context.Context, 
 		return nil, nil, err
 	}
 
-	signatureVerificationKR, err := protonDrive.getSignatureVerificationKeyring([]string{link.FileProperties.ActiveRevision.SignatureEmail})
+	signatureVerificationKR, err := protonDrive.getSignatureVerificationKeyring([]string{revision.SignatureEmail})
 	if err != nil {
 		return nil, nil, err
 	}
