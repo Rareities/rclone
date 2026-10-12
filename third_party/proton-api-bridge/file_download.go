@@ -190,7 +190,7 @@ func (reader *FileDownloadReader) skipOffset(offset int64, attrs *FileSystemAttr
 		// Skip complete encrypted blocks without downloading their contents.
 		// Reject malformed sizes instead of selecting an incorrect block.
 		for _, size := range attrs.BlockSizes {
-			if size < 0 {
+			if size <= 0 {
 				return ErrSeekOffsetAfterSkippingBlocks
 			}
 		}
