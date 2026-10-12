@@ -1084,6 +1084,17 @@ func (o *Object) Open(ctx context.Context, options ...fs.OpenOption) (io.ReadClo
 		return nil, err
 	}
 
+	return o.finishDownload(reader, sizeOnServer, fileSystemAttrs, limit)
+}
+
+// finishDownload preserves the metadata snapshot captured before a transfer.
+func (o *Object) finishDownload(reader io.ReadCloser, sizeOnServer int64, fileSystemAttrs *protonDriveAPI.FileSystemAttrs, limit int64) (io.ReadCloser, error) {
+	if reader == nil {
+		return nil, errors.New("Proton Drive returned no download reader")
+	}
+	if err := o.validateDownloadSnapshot(fileSystemAttrs); err != nil {
+		return nil, errors.Join(err, reader.Close())
+	}
 	if fileSystemAttrs != nil {
 		o.revisionID = fileSystemAttrs.RevisionID
 		o.originalSize = &fileSystemAttrs.Size
@@ -1098,10 +1109,39 @@ func (o *Object) Open(ctx context.Context, options ...fs.OpenOption) (io.ReadClo
 		o.blockSizes = nil
 	}
 
-	if reader == nil {
-		return nil, errors.New("Proton Drive returned no download reader")
-	}
 	return limitedDownload(reader, limit), nil
+}
+
+// validateDownloadSnapshot rejects a different identity, size, hash or modtime
+// before Open can change the values already recorded by the transfer logger.
+func (o *Object) validateDownloadSnapshot(attrs *protonDriveAPI.FileSystemAttrs) error {
+	changed := errors.New("Proton Drive revision metadata changed since listing; refresh the preview before retrying")
+	if attrs == nil {
+		if o.revisionID != "" || o.originalSize != nil || o.digests != nil {
+			return changed
+		}
+		return nil
+	}
+	if o.revisionID != "" && (o.revisionID != attrs.RevisionID || !o.modTime.Equal(attrs.ModificationTime)) {
+		return changed
+	}
+	if o.originalSize != nil && *o.originalSize != attrs.Size {
+		return changed
+	}
+	if o.digests != nil && *o.digests != "" {
+		want, err := normaliseSHA1(*o.digests)
+		if err != nil {
+			return err
+		}
+		got, err := normaliseSHA1(attrs.Digests)
+		if err != nil {
+			return err
+		}
+		if want != got {
+			return changed
+		}
+	}
+	return nil
 }
 
 // Update in to the object with the modTime given of the given size

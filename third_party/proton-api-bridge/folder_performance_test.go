@@ -25,6 +25,7 @@ type listingFixture struct {
 	revisionRequests      atomic.Int32
 	revisionMu            sync.Mutex
 	revisions             map[string]proton.RevisionMetadata
+	detailedOverrides     map[string]proton.RevisionMetadata
 	rejectMetadataRange   bool
 	rejectRevisionHistory bool
 }
@@ -173,6 +174,9 @@ func newListingFixture(t testing.TB, count int) *listingFixture {
 				}
 				if metadata, ok := f.revisions[r.URL.Path]; ok {
 					f.revisionRequests.Add(1)
+					if override, ok := f.detailedOverrides[r.URL.Path]; ok {
+						metadata = override
+					}
 					if f.rejectMetadataRange && r.URL.Query().Get("NoBlockUrls") != "" {
 						w.WriteHeader(http.StatusUnprocessableEntity)
 						_ = json.NewEncoder(w).Encode(map[string]any{"Code": 2501, "Error": "File or folder not found"})

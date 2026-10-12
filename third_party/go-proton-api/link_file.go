@@ -38,27 +38,6 @@ func (c *Client) GetRevisionAllBlocks(ctx context.Context, shareID, linkID, revi
 	return res.Revision, nil
 }
 
-// GetRevisionMetadata reads revision attributes without requesting block URLs.
-func (c *Client) GetRevisionMetadata(ctx context.Context, shareID, linkID, revisionID string) (RevisionMetadata, error) {
-	revisions, err := c.ListRevisions(ctx, shareID, linkID)
-	if err != nil {
-		return RevisionMetadata{}, err
-	}
-	var selected *RevisionMetadata
-	for i := range revisions {
-		if revisions[i].ID == revisionID && revisionID != "" {
-			if selected != nil {
-				return RevisionMetadata{}, fmt.Errorf("ambiguous revision metadata")
-			}
-			selected = &revisions[i]
-		}
-	}
-	if selected == nil {
-		return RevisionMetadata{}, fmt.Errorf("revision metadata not found")
-	}
-	return *selected, nil
-}
-
 func (c *Client) GetRevision(ctx context.Context, shareID, linkID, revisionID string, fromBlock, pageSize int) (Revision, error) {
 	if fromBlock < 1 {
 		return Revision{}, fmt.Errorf("fromBlock must be greater than 0")

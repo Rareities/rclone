@@ -101,19 +101,38 @@ func (protonDrive *ProtonDrive) activeRevisionAttrsWithKey(ctx context.Context, 
 		if err != nil {
 			return nil, err
 		}
-		if revisionMetadata.XAttr == "" {
-			key := revisionMetadataKey(protonDrive.MainShare.ShareID, link.LinkID, revisionMetadata.ID)
-			if cached, ok := protonDrive.revisionMetadata.get(key); ok {
-				revisionMetadata = cached
-			}
+	}
+	if revisionMetadata.ID == "" {
+		return nil, fmt.Errorf("active revision has no identity for file %s", link.LinkID)
+	}
+	// Supplied attributes must authenticate even when the detailed endpoint is
+	// authoritative. A valid detailed snapshot must not conceal corruption.
+	if revisionMetadata.XAttr != "" {
+		if _, err := protonDrive.revisionAttrsWithKey(revisionMetadata, nodeKR); err != nil {
+			return nil, err
 		}
 	}
-	attrs, err := protonDrive.revisionAttrsWithKey(revisionMetadata, nodeKR)
+	expectedID := revisionMetadata.ID
+	key := revisionMetadataKey(protonDrive.MainShare.ShareID, link.LinkID, expectedID)
+	metadata, err := protonDrive.revisionMetadata.load(ctx, key, func() (proton.RevisionMetadata, error) {
+		// Downloads use this query-free endpoint too. History may carry different
+		// attributes; only the canonical detailed/committed snapshot is cached.
+		revision, err := protonDrive.c.GetRevisionAllBlocks(ctx, protonDrive.MainShare.ShareID, link.LinkID, expectedID)
+		if err != nil {
+			return proton.RevisionMetadata{}, err
+		}
+		if revision.ID != expectedID {
+			return proton.RevisionMetadata{}, fmt.Errorf("revision response does not match requested revision for file %s", link.LinkID)
+		}
+		_, err = protonDrive.revisionAttrsWithKey(revision.RevisionMetadata, nodeKR)
+		return revision.RevisionMetadata, err
+	})
+	if err != nil {
+		return nil, err
+	}
+	attrs, err := protonDrive.revisionAttrsWithKey(metadata, nodeKR)
 	if ctx.Err() != nil {
 		return nil, ctx.Err()
-	}
-	if err == nil {
-		protonDrive.revisionMetadata.put(revisionMetadataKey(protonDrive.MainShare.ShareID, link.LinkID, revisionMetadata.ID), revisionMetadata)
 	}
 	return attrs, err
 }

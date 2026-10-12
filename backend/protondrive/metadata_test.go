@@ -97,3 +97,60 @@ func TestListedObjectAttributesPreserveUnknownSize(t *testing.T) {
 		t.Fatalf("listed plaintext attributes lost: size=%d hash=%q error=%v", o.Size(), got, err)
 	}
 }
+
+func TestDownloadRejectsChangedSnapshotWithoutMutation(t *testing.T) {
+	for _, change := range []string{"revision", "hash", "size", "modtime", "missing"} {
+		t.Run(change, func(t *testing.T) {
+			f := &Fs{opt: Options{ReportOriginalSize: true}}
+			old := &protonDriveAPI.FileSystemAttrs{RevisionID: "same", Size: 29, ModificationTime: time.Unix(200, 0), Digests: strings.Repeat("a", 40)}
+			o := f.newObjectWithLinkAndAttrs(".nomedia", &proton.Link{LinkID: "file"}, old)
+			attrs := *old
+			got := &attrs
+			switch change {
+			case "revision":
+				attrs.RevisionID = "next"
+			case "hash":
+				attrs.Digests = strings.Repeat("b", 40)
+			case "size":
+				attrs.Size++
+			case "modtime":
+				attrs.ModificationTime = attrs.ModificationTime.Add(time.Second)
+			case "missing":
+				got = nil
+			}
+			closeErr := errors.New("reader close failed")
+			r := &trackedReader{Reader: bytes.NewReader([]byte("unread")), err: closeErr}
+			stream, err := o.finishDownload(r, 999, got, -1)
+			require.Nil(t, stream)
+			require.ErrorContains(t, err, "metadata changed since listing")
+			require.ErrorIs(t, err, closeErr)
+			require.Equal(t, 1, r.closed)
+			require.Equal(t, int64(0), r.Size()-int64(r.Len()), "no content may be consumed")
+			require.Equal(t, old.RevisionID, o.revisionID)
+			require.Equal(t, old.Size, o.Size())
+			require.Equal(t, old.ModificationTime, o.modTime)
+			require.Equal(t, old.Digests, *o.digests)
+		})
+	}
+}
+
+func TestDownloadPreservesMatchingSnapshotAndUnknownMetadata(t *testing.T) {
+	f := &Fs{opt: Options{ReportOriginalSize: true}}
+	attrs := &protonDriveAPI.FileSystemAttrs{RevisionID: "same", Size: 3, ModificationTime: time.Unix(200, 0), Digests: strings.Repeat("a", 40)}
+	o := f.newObjectWithLinkAndAttrs("file", &proton.Link{LinkID: "file"}, attrs)
+	upper := *attrs
+	upper.Digests = strings.ToUpper(attrs.Digests)
+	r := &trackedReader{Reader: bytes.NewReader([]byte("abc"))}
+	stream, err := o.finishDownload(r, 999, &upper, 2)
+	require.NoError(t, err)
+	data, err := io.ReadAll(stream)
+	require.NoError(t, err)
+	require.Equal(t, "ab", string(data))
+	require.NoError(t, stream.Close())
+	require.Equal(t, 1, r.closed)
+	unknown := f.newObjectWithLinkAndAttrs("unknown", &proton.Link{LinkID: "unknown"}, nil)
+	stream, err = unknown.finishDownload(&trackedReader{Reader: bytes.NewReader(nil)}, 999, nil, -1)
+	require.NoError(t, err)
+	require.NoError(t, stream.Close())
+	require.Equal(t, int64(-1), unknown.Size())
+}

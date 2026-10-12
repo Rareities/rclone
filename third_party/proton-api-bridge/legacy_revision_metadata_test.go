@@ -36,11 +36,11 @@ func TestListingAttrsLegacyRevisionStaysConsistentAfterDownloadAndCommit(t *test
 		}
 	}
 	checkListing(want)
-	if f.revisionRequests.Load() != 1 {
-		t.Fatalf("first legacy scan should fetch one revision: %d", f.revisionRequests.Load())
+	if f.revisionRequests.Load() != 2 {
+		t.Fatalf("first legacy scan should resolve identity and detail: %d", f.revisionRequests.Load())
 	}
 	checkListing(want)
-	if f.revisionRequests.Load() != 2 {
+	if f.revisionRequests.Load() != 3 {
 		t.Fatal("active identity was not refreshed")
 	}
 	// Download metadata and later listings must refer to the same authenticated revision.
@@ -73,7 +73,7 @@ func TestListingAttrsLegacyRevisionStaysConsistentAfterDownloadAndCommit(t *test
 	if f.revisionRequests.Load() != beforeOpen+1 {
 		t.Fatal("snapshot mismatch fetched detailed revision before failing")
 	}
-	if f.revisionRequests.Load() != afterDownload+3 {
+	if f.revisionRequests.Load() != afterDownload+4 {
 		t.Fatal("changed revision was not fetched")
 	}
 	// A successful commit still requires fresh active identity on later listings.
@@ -218,5 +218,85 @@ func TestListingAttrsLegacyInvalidHistoryCannotUseWarmCache(t *testing.T) {
 	f.revisionMu.Unlock()
 	if entries, err := f.drive.ListDirectoryWithAttrs(context.Background(), "folder"); err == nil || entries != nil {
 		t.Fatal("invalid history metadata concealed by valid cache")
+	}
+}
+
+func TestListingAttrsUsesDetailedRevisionBeforeTransfer(t *testing.T) {
+	for _, legacy := range []bool{true, false} {
+		t.Run(fmt.Sprintf("legacy=%v", legacy), func(t *testing.T) {
+			f := newListingFixture(t, 1)
+			link := f.children[0]
+			nodeKR, err := f.drive.getLinkKR(context.Background(), &link)
+			if err != nil {
+				t.Fatal(err)
+			}
+			content := []byte("current authenticated content")
+			want := fmt.Sprintf("%x", sha1.Sum(content))
+			older := fmt.Sprintf("%x", sha1.Sum([]byte("older authenticated content!!")))
+			path := "/drive/shares/share/files/0/revisions/rev-0"
+			f.revisionMu.Lock()
+			history := f.revisions[path]
+			history.XAttr = signedRevisionAttrsOfSize(t, f.drive, nodeKR, older, int64(len(content)))
+			f.revisions[path] = history
+			detail := history
+			detail.XAttr = signedRevisionAttrsOfSize(t, f.drive, nodeKR, want, int64(len(content)))
+			f.detailedOverrides = map[string]proton.RevisionMetadata{path: detail}
+			f.revisionMu.Unlock()
+			link.FileProperties.ActiveRevision = history
+			if legacy {
+				link.FileProperties.ActiveRevision.XAttr = ""
+			}
+			f.children[0] = link
+			entries, err := f.drive.ListDirectoryWithAttrs(context.Background(), "folder")
+			if err != nil || len(entries) != 1 || entries[0].Attrs == nil || entries[0].Attrs.Digests != want {
+				t.Fatalf("bisync must capture detailed revision checksum before transfer: entries=%+v err=%v want=%s", entries, err, want)
+			}
+			_, attrs, err := f.drive.GetActiveRevisionWithAttrs(context.Background(), &link)
+			if err != nil || attrs == nil || attrs.Digests != entries[0].Attrs.Digests || attrs.RevisionID != entries[0].Attrs.RevisionID {
+				t.Fatalf("listing/download snapshot inconsistent: %+v %v", attrs, err)
+			}
+		})
+	}
+}
+
+func TestListingAttrsRejectsInvalidDetailedRevision(t *testing.T) {
+	for _, invalid := range []string{"signature", "wrong identity", "missing identity"} {
+		t.Run(invalid, func(t *testing.T) {
+			f := newListingFixture(t, 1)
+			path := "/drive/shares/share/files/0/revisions/rev-0"
+			f.revisionMu.Lock()
+			metadata := f.revisions[path]
+			switch invalid {
+			case "signature":
+				metadata.XAttr = "invalid detailed attributes"
+			case "wrong identity":
+				metadata.ID = "unrelated"
+			case "missing identity":
+				metadata.ID = ""
+			}
+			f.detailedOverrides = map[string]proton.RevisionMetadata{path: metadata}
+			f.revisionMu.Unlock()
+			if entries, err := f.drive.ListDirectoryWithAttrs(context.Background(), "folder"); err == nil || entries != nil {
+				t.Fatal("invalid detail concealed by valid advertised attributes")
+			}
+		})
+	}
+}
+
+func TestListingAttrsDetailedCacheRevalidatesSignerWithoutHistoryAttrs(t *testing.T) {
+	f := newListingFixture(t, 1)
+	f.children[0].FileProperties.ActiveRevision.XAttr = ""
+	if _, err := f.drive.ListDirectoryWithAttrs(context.Background(), "folder"); err != nil {
+		t.Fatal(err)
+	}
+	f.revisionMu.Lock()
+	path := "/drive/shares/share/files/0/revisions/rev-0"
+	metadata := f.revisions[path]
+	metadata.XAttr = ""
+	f.revisions[path] = metadata
+	f.revisionMu.Unlock()
+	f.drive.addrKRs["revision"] = f.drive.addrKRs["addr"]
+	if entries, err := f.drive.ListDirectoryWithAttrs(context.Background(), "folder"); err == nil || entries != nil {
+		t.Fatal("cached detail bypassed current signature verification")
 	}
 }

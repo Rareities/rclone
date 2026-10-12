@@ -10,8 +10,10 @@ utility packages, and local/fake-server tests are retained. Live-account
 `drive_test.go`, its helper and image fixtures are intentionally omitted from
 this build snapshot; they remain available at the exact upstream commit.
 
-Local behaviour changes cover search.go, file_upload.go and their regression tests.
-Two trailing spaces in constants.go are removed without changing its values. Legacy hash
+Local behaviour changes cover authenticated search, upload cancellation, session
+persistence, download ownership, fresh folder verification and canonical revision
+metadata, with their regression tests. Two trailing spaces in constants.go are
+removed without changing its values. Legacy hash
 availability no longer proves that a filename is absent. The shared lookup
 used by traversal and uploads falls back to exact authenticated plaintext
 names, rejects ambiguity/type collisions, and propagates signature errors.
@@ -35,3 +37,14 @@ local regression suite passes. Do not edit a downloaded Go module cache.
 Validation must include the parent rclone backend tests, this module's local
 crypto/search tests and common's fake-server auth-refresh tests. These do not
 prove compatibility with every live Proton account or a future crypto migration.
+
+Listings resolve legacy active identities through fresh revision history, then
+verify the exact detailed revision metadata used by downloads. Only detailed or
+successfully committed signed metadata is cached by share/link/revision identity;
+history attributes never seed that cache. Cache hits reverify current keys.
+Objects retain the resulting plaintext size/hash/identity snapshot and reject a
+changed snapshot before a download can alter values already recorded by bisync.
+Queries do not use the rejected block-range metadata route. Names/inventory and
+mutable active identities remain fresh; request concurrency and cache memory are
+bounded. This avoids a demonstrated listing/download snapshot inconsistency,
+but does not constitute acceptance against every live Proton account.

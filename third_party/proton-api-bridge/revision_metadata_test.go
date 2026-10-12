@@ -53,6 +53,9 @@ func TestListingAttrsPreferExplicitActiveRevision(t *testing.T) {
 	activeHash := "4f1e4374a22a9e62b2b263b70396eea4b513b30e"
 	link.XAttr = signedRevisionAttrs(t, fixture.drive, nodeKR, oldHash)
 	link.FileProperties.ActiveRevision.XAttr = signedRevisionAttrs(t, fixture.drive, nodeKR, activeHash)
+	fixture.revisionMu.Lock()
+	fixture.revisions["/drive/shares/share/files/0/revisions/rev-0"] = link.FileProperties.ActiveRevision
+	fixture.revisionMu.Unlock()
 	fetched, err := link.FileProperties.ActiveRevision.GetDecXAttrString(fixture.drive.addrKRs["revision"], nodeKR)
 	if err != nil {
 		t.Fatal(err)
