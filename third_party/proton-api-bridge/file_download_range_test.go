@@ -6,13 +6,12 @@ import (
     "io"
     "testing"
 
-    "github.com/rclone/go-proton-api"
 )
 
 func TestDownloadSkipOffsetWithoutSignedAttributes(t *testing.T) {
     // A buffered plaintext reader stands in for an already decrypted block.
     // Legacy metadata must not silently discard the requested range.
-    reader := &FileDownloadReader{data: bytes.NewBufferString("abcdefgh"), revision: &proton.Revision{}}
+    reader := &FileDownloadReader{data: bytes.NewBufferString("abcdefgh"), revision: nil}
     // No network blocks are needed when the buffer already contains plaintext.
     if err := reader.skipOffset(3, nil); err != nil { t.Fatal(err) }
     rest, err := io.ReadAll(reader.data)
