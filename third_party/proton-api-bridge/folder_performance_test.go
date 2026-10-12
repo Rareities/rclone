@@ -18,13 +18,15 @@ import (
 )
 
 type listingFixture struct {
-	drive            *ProtonDrive
-	children         []proton.Link
-	folderRequests   atomic.Int32
-	rootRequests     atomic.Int32
-	revisionRequests atomic.Int32
-	revisionMu       sync.Mutex
-	revisions        map[string]proton.RevisionMetadata
+	drive                 *ProtonDrive
+	children              []proton.Link
+	folderRequests        atomic.Int32
+	rootRequests          atomic.Int32
+	revisionRequests      atomic.Int32
+	revisionMu            sync.Mutex
+	revisions             map[string]proton.RevisionMetadata
+	rejectMetadataRange   bool
+	rejectRevisionHistory bool
 }
 
 // newListingFixture uses real signed names, node keys and attributes.
@@ -136,6 +138,12 @@ func newListingFixture(t testing.TB, count int) *listingFixture {
 				f.revisionMu.Lock()
 				defer f.revisionMu.Unlock()
 				if strings.HasSuffix(r.URL.Path, "/revisions") {
+					f.revisionRequests.Add(1)
+					if f.rejectRevisionHistory {
+						w.WriteHeader(http.StatusUnprocessableEntity)
+						_ = json.NewEncoder(w).Encode(map[string]any{"Code": 2501, "Error": "File or folder not found"})
+						return
+					}
 					entries := []proton.RevisionMetadata{}
 					for path, metadata := range f.revisions {
 						if strings.HasPrefix(path, r.URL.Path+"/") {
@@ -152,6 +160,12 @@ func newListingFixture(t testing.TB, count int) *listingFixture {
 						http.Error(w, "bad request", 400)
 						return
 					}
+					for path, metadata := range f.revisions {
+						if strings.HasPrefix(path, r.URL.Path[:strings.LastIndex(r.URL.Path, "/")]+"/") {
+							metadata.State = proton.RevisionStateObsolete
+							f.revisions[path] = metadata
+						}
+					}
 					parts := strings.Split(r.URL.Path, "/")
 					f.revisions[r.URL.Path] = proton.RevisionMetadata{ID: parts[len(parts)-1], State: proton.RevisionStateActive, SignatureEmail: req.SignatureAddress, XAttr: req.XAttr}
 					_ = json.NewEncoder(w).Encode(map[string]any{"Code": 1000})
@@ -159,6 +173,11 @@ func newListingFixture(t testing.TB, count int) *listingFixture {
 				}
 				if metadata, ok := f.revisions[r.URL.Path]; ok {
 					f.revisionRequests.Add(1)
+					if f.rejectMetadataRange && r.URL.Query().Get("NoBlockUrls") != "" {
+						w.WriteHeader(http.StatusUnprocessableEntity)
+						_ = json.NewEncoder(w).Encode(map[string]any{"Code": 2501, "Error": "File or folder not found"})
+						return
+					}
 					if r.URL.Query().Get("PageSize") != "" && (r.URL.Query().Get("PageSize") != "1" || r.URL.Query().Get("FromBlockIndex") != "1" || r.URL.Query().Get("NoBlockUrls") != "1") {
 						t.Errorf("unexpected metadata query: %s", r.URL.RawQuery)
 					}

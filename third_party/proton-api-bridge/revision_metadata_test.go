@@ -14,8 +14,16 @@ import (
 )
 
 func signedRevisionAttrs(t *testing.T, drive *ProtonDrive, nodeKR *crypto.KeyRing, digest string) string {
+	return signedRevisionAttrsOfSize(t, drive, nodeKR, digest, 29)
+}
+
+func signedRevisionAttrsOfSize(t *testing.T, drive *ProtonDrive, nodeKR *crypto.KeyRing, digest string, size int64) string {
 	t.Helper()
-	attrs, err := json.Marshal(proton.RevisionXAttr{Common: proton.RevisionXAttrCommon{ModificationTime: "2026-10-11T12:00:00Z", Size: 29, BlockSizes: []int64{29}, Digests: map[string]string{"SHA1": digest}}})
+	blocks := []int64{}
+	if size > 0 {
+		blocks = append(blocks, size)
+	}
+	attrs, err := json.Marshal(proton.RevisionXAttr{Common: proton.RevisionXAttrCommon{ModificationTime: "2026-10-11T12:00:00Z", Size: size, BlockSizes: blocks, Digests: map[string]string{"SHA1": digest}}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -113,8 +121,11 @@ func TestActiveRevisionUsesItsOwnSignerAndRejectsChangedIdentity(t *testing.T) {
 		t.Fatalf("unexpected fresh attrs: %+v", attrs)
 	}
 	link.FileProperties.ActiveRevision.ID = "stale"
-	if _, _, err := fixture.drive.GetActiveRevisionWithAttrs(context.Background(), &link); err == nil || !strings.Contains(err.Error(), "active revision changed") {
-		t.Fatalf("changed advertised revision must stop before download: %v", err)
+	if _, _, err := fixture.drive.GetActiveRevisionWithAttrs(context.Background(), &link); err != nil {
+		t.Fatalf("stale listing hint must not override fresh history identity: %v", err)
+	}
+	if _, _, err := fixture.drive.getActiveRevisionWithAttrs(context.Background(), &link, "stale"); err == nil || !strings.Contains(err.Error(), "active revision changed") {
+		t.Fatalf("changed verified snapshot must stop before download: %v", err)
 	}
 	link.FileProperties.ActiveRevision.ID = "fresh"
 	revision.ID = "unrelated"

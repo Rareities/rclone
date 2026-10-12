@@ -40,8 +40,8 @@ func TestListingAttrsLegacyRevisionStaysConsistentAfterDownloadAndCommit(t *test
 		t.Fatalf("first legacy scan should fetch one revision: %d", f.revisionRequests.Load())
 	}
 	checkListing(want)
-	if f.revisionRequests.Load() != 1 {
-		t.Fatal("unchanged revision was fetched again")
+	if f.revisionRequests.Load() != 2 {
+		t.Fatal("active identity was not refreshed")
 	}
 	// Download metadata and later listings must refer to the same authenticated revision.
 	f.drive.ClearCache()
@@ -51,22 +51,32 @@ func TestListingAttrsLegacyRevisionStaysConsistentAfterDownloadAndCommit(t *test
 	}
 	afterDownload := f.revisionRequests.Load()
 	checkListing(want)
-	if f.revisionRequests.Load() != afterDownload {
-		t.Fatal("download did not seed authenticated metadata reuse")
+	if f.revisionRequests.Load() != afterDownload+1 {
+		t.Fatal("download listing did not refresh active identity")
 	}
 	// A new revision ID must never reuse the previous revision's checksum.
 	next := "next-revision"
 	nextHash := fmt.Sprintf("%x", sha1.Sum([]byte(strings.Repeat("C", 29))))
-	link.FileProperties.ActiveRevision.ID = next
+	// Keep the advertised hint stuck at the old ID while history advances.
 	f.children[0] = link
 	f.revisionMu.Lock()
+	previous := f.revisions[path]
+	previous.State = proton.RevisionStateObsolete
+	f.revisions[path] = previous
 	f.revisions["/drive/shares/share/files/0/revisions/"+next] = proton.RevisionMetadata{ID: next, State: proton.RevisionStateActive, SignatureEmail: "revision@example.com", XAttr: signedRevisionAttrs(t, f.drive, nodeKR, nextHash)}
 	f.revisionMu.Unlock()
 	checkListing(nextHash)
-	if f.revisionRequests.Load() != afterDownload+1 {
+	beforeOpen := f.revisionRequests.Load()
+	if _, _, err := f.drive.getActiveRevisionWithAttrs(context.Background(), &link, "rev-0"); err == nil || !strings.Contains(err.Error(), "active revision changed") {
+		t.Fatalf("changed verified snapshot accepted: %v", err)
+	}
+	if f.revisionRequests.Load() != beforeOpen+1 {
+		t.Fatal("snapshot mismatch fetched detailed revision before failing")
+	}
+	if f.revisionRequests.Load() != afterDownload+3 {
 		t.Fatal("changed revision was not fetched")
 	}
-	// A successful signed upload commit supplies authoritative metadata without a GET.
+	// A successful commit still requires fresh active identity on later listings.
 	committed := "committed-revision"
 	committedHash := fmt.Sprintf("%x", sha1.Sum([]byte(strings.Repeat("D", 29))))
 	f.drive.DefaultAddrKR = f.drive.addrKRs["revision"]
@@ -79,8 +89,8 @@ func TestListingAttrsLegacyRevisionStaysConsistentAfterDownloadAndCommit(t *test
 	link.FileProperties.ActiveRevision.ID = committed
 	f.children[0] = link
 	checkListing(committedHash)
-	if f.revisionRequests.Load() != beforeCommitListing {
-		t.Fatal("committed revision was fetched unnecessarily")
+	if f.revisionRequests.Load() != beforeCommitListing+1 {
+		t.Fatal("committed revision identity was not refreshed")
 	}
 	// Cached ciphertext must still verify using the current signer keys.
 	validSigner := f.drive.addrKRs["revision"]
@@ -114,16 +124,99 @@ func TestListingAttrsLegacyMissingIdentityRequiresOneActiveRevision(t *testing.T
 	}
 }
 
-func TestListingAttrsLegacyRejectsWrongRevisionResponse(t *testing.T) {
+func TestListingAttrsLegacyRejectsMissingRevisionIdentity(t *testing.T) {
 	f := newListingFixture(t, 1)
 	f.children[0].FileProperties.ActiveRevision.XAttr = ""
 	path := "/drive/shares/share/files/0/revisions/rev-0"
 	f.revisionMu.Lock()
 	metadata := f.revisions[path]
-	metadata.ID = "unrelated"
+	metadata.ID = ""
 	f.revisions[path] = metadata
 	f.revisionMu.Unlock()
 	if entries, err := f.drive.ListDirectoryWithAttrs(context.Background(), "folder"); err == nil || entries != nil {
 		t.Fatal("wrong revision identity accepted")
+	}
+}
+
+func TestListingAttrsLegacyHandlesRejectedRangeAndEmptyFile(t *testing.T) {
+	f := newListingFixture(t, 1)
+	link := f.children[0]
+	nodeKR, err := f.drive.getLinkKR(context.Background(), &link)
+	if err != nil {
+		t.Fatal(err)
+	}
+	link.FileProperties.ActiveRevision.XAttr = ""
+	f.children[0] = link
+	want := fmt.Sprintf("%x", sha1.Sum(nil))
+	f.revisionMu.Lock()
+	f.rejectMetadataRange = true
+	path := "/drive/shares/share/files/0/revisions/rev-0"
+	metadata := f.revisions[path]
+	metadata.XAttr = signedRevisionAttrsOfSize(t, f.drive, nodeKR, want, 0)
+	f.revisions[path] = metadata
+	f.revisionMu.Unlock()
+	entries, err := f.drive.ListDirectoryWithAttrs(context.Background(), "folder")
+	if err != nil || len(entries) != 1 || entries[0].Attrs == nil || entries[0].Attrs.Size != 0 || entries[0].Attrs.Digests != want {
+		t.Fatalf("empty file must use signed revision metadata without rejected block-range request: %v", err)
+	}
+}
+
+func TestListingAttrsLegacyHistoryFailureCannotUseWarmCache(t *testing.T) {
+	f := newListingFixture(t, 1)
+	f.children[0].FileProperties.ActiveRevision.XAttr = ""
+	if _, err := f.drive.ListDirectoryWithAttrs(context.Background(), "folder"); err != nil {
+		t.Fatal(err)
+	}
+	f.revisionMu.Lock()
+	f.rejectRevisionHistory = true
+	f.revisionMu.Unlock()
+	if entries, err := f.drive.ListDirectoryWithAttrs(context.Background(), "folder"); err == nil || entries != nil {
+		t.Fatal("history failure was concealed by cached metadata")
+	}
+}
+
+func TestListingAttrsLegacyMissingHistoryAttrsUsesOnlyCanonicalCache(t *testing.T) {
+	f := newListingFixture(t, 1)
+	f.children[0].FileProperties.ActiveRevision.XAttr = ""
+	entries, err := f.drive.ListDirectoryWithAttrs(context.Background(), "folder")
+	if err != nil || len(entries) != 1 || entries[0].Attrs == nil {
+		t.Fatalf("signed history scan failed: %v", err)
+	}
+	want := entries[0].Attrs.Digests
+	f.revisionMu.Lock()
+	path := "/drive/shares/share/files/0/revisions/rev-0"
+	metadata := f.revisions[path]
+	metadata.XAttr = ""
+	f.revisions[path] = metadata
+	f.revisionMu.Unlock()
+	entries, err = f.drive.ListDirectoryWithAttrs(context.Background(), "folder")
+	if err != nil || entries[0].Attrs == nil || entries[0].Attrs.RevisionID != "rev-0" || entries[0].Attrs.Digests != want {
+		t.Fatalf("canonical signed cache not reusable: %v", err)
+	}
+	f.revisionMu.Lock()
+	delete(f.revisions, path)
+	metadata.ID = "next"
+	f.revisions["/drive/shares/share/files/0/revisions/next"] = metadata
+	f.revisionMu.Unlock()
+	entries, err = f.drive.ListDirectoryWithAttrs(context.Background(), "folder")
+	if err != nil || entries[0].Attrs != nil {
+		t.Fatalf("old cached attributes supplied for new revision: %v", err)
+	}
+}
+
+func TestListingAttrsLegacyInvalidHistoryCannotUseWarmCache(t *testing.T) {
+	f := newListingFixture(t, 1)
+	f.children[0].FileProperties.ActiveRevision.XAttr = ""
+	if _, err := f.drive.ListDirectoryWithAttrs(context.Background(), "folder"); err != nil {
+		t.Fatal(err)
+	}
+	f.revisionMu.Lock()
+	path := "/drive/shares/share/files/0/revisions/rev-0"
+	metadata := f.revisions[path]
+	metadata.XAttr = "corrupted history attributes"
+	f.revisions[path] = metadata
+	f.revisionMu.Unlock()
+	if entries, err := f.drive.ListDirectoryWithAttrs(context.Background(), "folder"); err == nil || entries != nil {
+		t.Fatal("invalid history metadata concealed by valid cache")
 	}
 }

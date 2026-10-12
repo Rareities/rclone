@@ -100,6 +100,12 @@ func (reader *FileDownloadReader) populateBufferOnRead() (err error) {
 }
 
 func (protonDrive *ProtonDrive) DownloadFileByID(ctx context.Context, linkID string, offset int64) (io.ReadCloser, int64, *FileSystemAttrs, error) {
+	return protonDrive.DownloadFileRevisionByID(ctx, linkID, "", offset)
+}
+
+// DownloadFileRevisionByID rejects a changed active revision before downloading.
+// An empty revisionID selects the current active revision.
+func (protonDrive *ProtonDrive) DownloadFileRevisionByID(ctx context.Context, linkID, revisionID string, offset int64) (io.ReadCloser, int64, *FileSystemAttrs, error) {
 	/* It's like event system, we need to get the latest information before creating the move request! */
 	protonDrive.removeLinkIDFromCache(linkID, false)
 
@@ -108,10 +114,14 @@ func (protonDrive *ProtonDrive) DownloadFileByID(ctx context.Context, linkID str
 		return nil, 0, nil, err
 	}
 
-	return protonDrive.DownloadFile(ctx, link, offset)
+	return protonDrive.downloadFile(ctx, link, revisionID, offset)
 }
 
 func (protonDrive *ProtonDrive) DownloadFile(ctx context.Context, link *proton.Link, offset int64) (io.ReadCloser, int64, *FileSystemAttrs, error) {
+	return protonDrive.downloadFile(ctx, link, "", offset)
+}
+
+func (protonDrive *ProtonDrive) downloadFile(ctx context.Context, link *proton.Link, revisionID string, offset int64) (io.ReadCloser, int64, *FileSystemAttrs, error) {
 	if link.Type != proton.LinkTypeFile {
 		return nil, 0, nil, ErrLinkTypeMustToBeFileType
 	}
@@ -135,7 +145,7 @@ func (protonDrive *ProtonDrive) DownloadFile(ctx context.Context, link *proton.L
 		return nil, 0, nil, err
 	}
 
-	revision, fileSystemAttrs, err := protonDrive.GetActiveRevisionWithAttrs(ctx, link)
+	revision, fileSystemAttrs, err := protonDrive.getActiveRevisionWithAttrs(ctx, link, revisionID)
 	if err != nil {
 		return nil, 0, nil, err
 	}

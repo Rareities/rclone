@@ -243,6 +243,7 @@ type Object struct {
 	modTime      time.Time // modification time of the object
 	createdTime  time.Time // creation time of the object
 	id           string    // ID of the object
+	revisionID   string    // verified listing revision, if known
 	mimetype     string    // mimetype of the file
 
 	link *proton.Link // link data on proton server
@@ -723,6 +724,7 @@ func (f *Fs) newObjectWithLinkAndAttrs(remote string, link *proton.Link, fileSys
 
 	if fileSystemAttrs != nil {
 		o.modTime = fileSystemAttrs.ModificationTime
+		o.revisionID = fileSystemAttrs.RevisionID
 		o.originalSize = &fileSystemAttrs.Size
 		o.blockSizes = fileSystemAttrs.BlockSizes
 		o.digests = &fileSystemAttrs.Digests
@@ -1076,13 +1078,14 @@ func (o *Object) Open(ctx context.Context, options ...fs.OpenOption) (io.ReadClo
 	var sizeOnServer int64
 	var err error
 	if err = o.fs.pacer.Call(func() (bool, error) {
-		reader, sizeOnServer, fileSystemAttrs, err = o.fs.protonDrive.DownloadFileByID(ctx, o.id, offset)
+		reader, sizeOnServer, fileSystemAttrs, err = o.fs.protonDrive.DownloadFileRevisionByID(ctx, o.id, o.revisionID, offset)
 		return shouldRetry(ctx, err)
 	}); err != nil {
 		return nil, err
 	}
 
 	if fileSystemAttrs != nil {
+		o.revisionID = fileSystemAttrs.RevisionID
 		o.originalSize = &fileSystemAttrs.Size
 		o.modTime = fileSystemAttrs.ModificationTime
 		o.digests = &fileSystemAttrs.Digests
@@ -1137,6 +1140,7 @@ func (o *Object) Update(ctx context.Context, in io.Reader, src fs.ObjectInfo, op
 	}
 
 	o.id = linkID
+	o.revisionID = "" // Upload confirms plaintext attributes, but does not expose the committed revision ID.
 	o.originalSize = &fileSystemAttrs.Size
 	// The server stores modtimes with second precision so truncate
 	// here too to keep the in-memory modtime identical to the one a

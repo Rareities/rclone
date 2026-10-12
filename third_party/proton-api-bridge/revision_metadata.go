@@ -67,15 +67,24 @@ func (s *revisionMetadataStore) clear() {
 }
 
 func (s *revisionMetadataStore) load(ctx context.Context, key string, fetch func() (proton.RevisionMetadata, error)) (proton.RevisionMetadata, error) {
+	return s.request(ctx, key, fetch, true)
+}
+
+// fresh coalesces concurrent lookups without retaining mutable active identities.
+func (s *revisionMetadataStore) fresh(ctx context.Context, key string, fetch func() (proton.RevisionMetadata, error)) (proton.RevisionMetadata, error) {
+	return s.request(ctx, "active:"+key, fetch, false)
+}
+
+func (s *revisionMetadataStore) request(ctx context.Context, key string, fetch func() (proton.RevisionMetadata, error), cached bool) (proton.RevisionMetadata, error) {
 	for {
 		if err := ctx.Err(); err != nil {
 			return proton.RevisionMetadata{}, err
 		}
-		if v, ok := s.get(key); ok {
+		if v, ok := s.get(key); cached && ok {
 			return v, nil
 		}
 		result := s.loads.DoChan(key, func() (any, error) {
-			if v, ok := s.get(key); ok {
+			if v, ok := s.get(key); cached && ok {
 				return v, nil
 			}
 			s.mu.Lock()
@@ -97,7 +106,9 @@ func (s *revisionMetadataStore) load(ctx context.Context, key string, fetch func
 			if err != nil {
 				return nil, err
 			}
-			s.put(key, v)
+			if cached {
+				s.put(key, v)
+			}
 			return v, nil
 		})
 		select {

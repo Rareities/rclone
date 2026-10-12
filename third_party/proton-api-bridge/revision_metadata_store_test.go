@@ -157,3 +157,20 @@ func TestRevisionMetadataStoreIsBoundedAndKeysCannotAlias(t *testing.T) {
 		t.Fatal("metadata was not cleared")
 	}
 }
+
+func TestRevisionMetadataStoreFreshNeverRetainsActiveIdentity(t *testing.T) {
+	var store revisionMetadataStore
+	calls := 0
+	for _, id := range []string{"A", "B"} {
+		v, err := store.fresh(context.Background(), "file", func() (proton.RevisionMetadata, error) {
+			calls++
+			return proton.RevisionMetadata{ID: id, XAttr: "signed"}, nil
+		})
+		if err != nil || v.ID != id {
+			t.Fatalf("active identity was retained: %+v %v", v, err)
+		}
+	}
+	if calls != 2 || len(store.entries) != 0 {
+		t.Fatal("fresh history lookups populated the metadata cache")
+	}
+}

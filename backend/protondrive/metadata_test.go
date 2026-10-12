@@ -90,10 +90,10 @@ func TestListedObjectAttributesPreserveUnknownSize(t *testing.T) {
 	if o.Size() != -1 || o.ModTime(context.Background()).Unix() != 100 || o.digests != nil {
 		t.Fatalf("missing attrs must preserve unknown plaintext size: %+v", o)
 	}
-	attrs := &protonDriveAPI.FileSystemAttrs{Size: 12, ModificationTime: time.Unix(200, 0), Digests: strings.Repeat("a", 40)}
+	attrs := &protonDriveAPI.FileSystemAttrs{RevisionID: "verified", Size: 12, ModificationTime: time.Unix(200, 0), Digests: strings.Repeat("a", 40)}
 	o = f.newObjectWithLinkAndAttrs("file", link, attrs)
 	got, err := o.Hash(context.Background(), hash.SHA1)
-	if o.Size() != 12 || o.ModTime(context.Background()).Unix() != 200 || err != nil || got != attrs.Digests {
+	if o.revisionID != "verified" || o.Size() != 12 || o.ModTime(context.Background()).Unix() != 200 || err != nil || got != attrs.Digests {
 		t.Fatalf("listed plaintext attributes lost: size=%d hash=%q error=%v", o.Size(), got, err)
 	}
 }

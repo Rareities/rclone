@@ -13,6 +13,8 @@ import (
 )
 
 type FileSystemAttrs struct {
+	// RevisionID identifies the revision whose plaintext attributes were verified.
+	RevisionID       string
 	ModificationTime time.Time
 	Size             int64
 	BlockSizes       []int64
@@ -81,33 +83,28 @@ func (protonDrive *ProtonDrive) activeRevisionAttrsWithKey(ctx context.Context, 
 	}
 	revisionMetadata := link.FileProperties.ActiveRevision
 	if revisionMetadata.XAttr == "" {
-		if revisionMetadata.ID == "" {
-			revisions, err := protonDrive.GetRevisions(ctx, link, proton.RevisionStateActive)
-			if err != nil {
-				return nil, err
-			}
-			if len(revisions) != 1 || revisions[0].ID == "" {
-				return nil, ErrCantFindActiveRevision
-			}
-			revisionMetadata = *revisions[0]
+		// Legacy links may advertise a stale ID. Resolve the active identity afresh
+		// before reusing immutable, signed metadata for that revision.
+		var err error
+		revisionMetadata, err = protonDrive.revisionMetadata.fresh(ctx,
+			revisionMetadataKey(protonDrive.MainShare.ShareID, link.LinkID, ""),
+			func() (proton.RevisionMetadata, error) {
+				revisions, err := protonDrive.GetRevisions(ctx, link, proton.RevisionStateActive)
+				if err != nil {
+					return proton.RevisionMetadata{}, err
+				}
+				if len(revisions) != 1 || revisions[0].ID == "" {
+					return proton.RevisionMetadata{}, ErrCantFindActiveRevision
+				}
+				return *revisions[0], nil
+			})
+		if err != nil {
+			return nil, err
 		}
 		if revisionMetadata.XAttr == "" {
-			expectedRevisionID := revisionMetadata.ID
 			key := revisionMetadataKey(protonDrive.MainShare.ShareID, link.LinkID, revisionMetadata.ID)
-			var err error
-			revisionMetadata, err = protonDrive.revisionMetadata.load(ctx, key, func() (proton.RevisionMetadata, error) {
-				metadata, err := protonDrive.c.GetRevisionMetadata(ctx, protonDrive.MainShare.ShareID, link.LinkID, expectedRevisionID)
-				if err != nil {
-					return metadata, err
-				}
-				if metadata.ID != expectedRevisionID {
-					return metadata, fmt.Errorf("revision metadata does not match requested revision for file %s", link.LinkID)
-				}
-				_, err = protonDrive.revisionAttrsWithKey(metadata, nodeKR)
-				return metadata, err
-			})
-			if err != nil {
-				return nil, err
+			if cached, ok := protonDrive.revisionMetadata.get(key); ok {
+				revisionMetadata = cached
 			}
 		}
 	}
@@ -148,6 +145,7 @@ func (protonDrive *ProtonDrive) revisionAttrsWithKey(revisionMetadata proton.Rev
 	}
 
 	return &FileSystemAttrs{
+		RevisionID:       revisionMetadata.ID,
 		ModificationTime: modificationTime,
 		Size:             revisionXAttrCommon.Size,
 		BlockSizes:       revisionXAttrCommon.BlockSizes,
@@ -156,6 +154,10 @@ func (protonDrive *ProtonDrive) revisionAttrsWithKey(revisionMetadata proton.Rev
 }
 
 func (protonDrive *ProtonDrive) GetActiveRevisionWithAttrs(ctx context.Context, link *proton.Link) (*proton.Revision, *FileSystemAttrs, error) {
+	return protonDrive.getActiveRevisionWithAttrs(ctx, link, "")
+}
+
+func (protonDrive *ProtonDrive) getActiveRevisionWithAttrs(ctx context.Context, link *proton.Link, expectedRevisionID string) (*proton.Revision, *FileSystemAttrs, error) {
 	if link == nil {
 		return nil, nil, ErrLinkMustNotBeNil
 	}
@@ -171,8 +173,7 @@ func (protonDrive *ProtonDrive) GetActiveRevisionWithAttrs(ctx context.Context, 
 	if revisionsMetadata[0].ID == "" {
 		return nil, nil, fmt.Errorf("active revision has no identity for file %s", link.LinkID)
 	}
-	if link.FileProperties != nil && link.FileProperties.ActiveRevision.ID != "" &&
-		link.FileProperties.ActiveRevision.ID != revisionsMetadata[0].ID {
+	if expectedRevisionID != "" && expectedRevisionID != revisionsMetadata[0].ID {
 		return nil, nil, fmt.Errorf("active revision changed while opening file %s", link.LinkID)
 	}
 

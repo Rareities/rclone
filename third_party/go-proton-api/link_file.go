@@ -40,17 +40,23 @@ func (c *Client) GetRevisionAllBlocks(ctx context.Context, shareID, linkID, revi
 
 // GetRevisionMetadata reads revision attributes without requesting block URLs.
 func (c *Client) GetRevisionMetadata(ctx context.Context, shareID, linkID, revisionID string) (RevisionMetadata, error) {
-	var res struct {
-		Revision RevisionMetadata
-	}
-	if err := c.do(ctx, func(r *resty.Request) (*resty.Response, error) {
-		return r.SetQueryParams(map[string]string{
-			"FromBlockIndex": "1", "PageSize": "1", "NoBlockUrls": Bool(true).FormatURL(),
-		}).SetResult(&res).Get("/drive/shares/" + shareID + "/files/" + linkID + "/revisions/" + revisionID)
-	}); err != nil {
+	revisions, err := c.ListRevisions(ctx, shareID, linkID)
+	if err != nil {
 		return RevisionMetadata{}, err
 	}
-	return res.Revision, nil
+	var selected *RevisionMetadata
+	for i := range revisions {
+		if revisions[i].ID == revisionID && revisionID != "" {
+			if selected != nil {
+				return RevisionMetadata{}, fmt.Errorf("ambiguous revision metadata")
+			}
+			selected = &revisions[i]
+		}
+	}
+	if selected == nil {
+		return RevisionMetadata{}, fmt.Errorf("revision metadata not found")
+	}
+	return *selected, nil
 }
 
 func (c *Client) GetRevision(ctx context.Context, shareID, linkID, revisionID string, fromBlock, pageSize int) (Revision, error) {
