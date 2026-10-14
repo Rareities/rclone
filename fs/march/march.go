@@ -353,7 +353,7 @@ func (m *March) matchListings(srcChan, dstChan <-chan fs.DirEntry, dstCancel fun
 				duplicateErr = fmt.Errorf("ambiguous normalised names in source: %q and %q", srcPrev.Remote(), src.Remote())
 			}
 			if srcName == srcPrevName && fs.DirEntryType(srcPrev) == fs.DirEntryType(src) {
-				fs.Logf(src, "Duplicate %s found in source - ignoring", fs.DirEntryType(src))
+				fs.LogfCtx(m.Ctx, src, "Duplicate %s found in source - ignoring", fs.DirEntryType(src))
 				srcDone() // skip the src and retry the dst
 				continue
 			} else if srcName < srcPrevName {
@@ -367,7 +367,7 @@ func (m *March) matchListings(srcChan, dstChan <-chan fs.DirEntry, dstCancel fun
 				duplicateErr = fmt.Errorf("ambiguous normalised names in destination: %q and %q", dstPrev.Remote(), dst.Remote())
 			}
 			if dstName == dstPrevName && fs.DirEntryType(dst) == fs.DirEntryType(dstPrev) {
-				fs.Logf(dst, "Duplicate %s found in destination - ignoring", fs.DirEntryType(dst))
+				fs.LogfCtx(m.Ctx, dst, "Duplicate %s found in destination - ignoring", fs.DirEntryType(dst))
 				dstDone() // skip the dst and retry the src
 				continue
 			} else if dstName < dstPrevName {
@@ -573,9 +573,9 @@ func (m *March) processJob(job listDirJob) ([]listDirJob, error) {
 	wg.Wait()
 	if srcListErr != nil {
 		if job.srcRemote != "" {
-			fs.Errorf(job.srcRemote, "error reading source directory: %v", srcListErr)
+			fs.ErrorfCtx(m.Ctx, job.srcRemote, "error reading source directory: %v", srcListErr)
 		} else {
-			fs.Errorf(m.Fsrc, "error reading source root directory: %v", srcListErr)
+			fs.ErrorfCtx(m.Ctx, m.Fsrc, "error reading source root directory: %v", srcListErr)
 		}
 		srcListErr = fs.CountError(m.Ctx, srcListErr)
 		return nil, srcListErr
@@ -586,9 +586,9 @@ func (m *March) processJob(job listDirJob) ([]listDirJob, error) {
 		// Copy the stuff anyway
 	} else if dstListErr != nil {
 		if job.dstRemote != "" {
-			fs.Errorf(job.dstRemote, "error reading destination directory: %v", dstListErr)
+			fs.ErrorfCtx(m.Ctx, job.dstRemote, "error reading destination directory: %v", dstListErr)
 		} else {
-			fs.Errorf(m.Fdst, "error reading destination root directory: %v", dstListErr)
+			fs.ErrorfCtx(m.Ctx, m.Fdst, "error reading destination root directory: %v", dstListErr)
 		}
 		dstListErr = fs.CountError(m.Ctx, dstListErr)
 		return nil, dstListErr
