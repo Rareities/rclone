@@ -116,12 +116,13 @@ WebDAV or S3, that work out of the box.)
 {{< provider name="Akamai Netstorage" home="https://www.akamai.com/us/en/products/media-delivery/netstorage.jsp" config="/netstorage/" >}}
 {{< provider name="Alibaba Cloud (Aliyun) Object Storage System (OSS)" home="https://www.alibabacloud.com/product/oss/" config="/s3/#alibaba-oss" >}}
 {{< provider name="Amazon S3" home="https://aws.amazon.com/s3/" config="/s3/" >}}
+{{< provider name="Autonomys Auto Drive" home="https://ai3.storage/" config="/s3/#autonomys" >}}
 {{< provider name="Bizfly Cloud Simple Storage" home="https://bizflycloud.vn/" config="/s3/#bizflycloud" >}}
 {{< provider name="Backblaze B2" home="https://www.backblaze.com/cloud-storage" config="/b2/" >}}
 {{< provider name="Box" home="https://www.box.com/" config="/box/" >}}
 {{< provider name="Ceph" home="http://ceph.com/" config="/s3/#ceph" >}}
 {{< provider name="China Mobile Ecloud Elastic Object Storage (EOS)" home="https://ecloud.10086.cn/home/product-introduction/eos/" config="/s3/#china-mobile-ecloud-eos" >}}
-{{< provider name="Arvan Cloud Object Storage (AOS)" home="https://www.arvancloud.ir/en/products/cloud-storage" config="/s3/#arvan-cloud-object-storage-aos" >}}
+{{< provider name="Arvan Cloud Object Storage (AOS)" home="https://www.arvancloud.ir/en/products/cloud-storage" config="/s3/#arvan-cloud" >}}
 {{< provider name="Citrix ShareFile" home="http://sharefile.com/" config="/sharefile/" >}}
 {{< provider name="Cloudflare R2" home="https://blog.cloudflare.com/r2-open-beta/" config="/s3/#cloudflare-r2" >}}
 {{< provider name="Cloudinary" home="https://cloudinary.com/" config="/cloudinary/" >}}
@@ -166,7 +167,7 @@ WebDAV or S3, that work out of the box.)
 {{< provider name="IONOS Cloud" home="https://cloud.ionos.com/storage/object-storage" config="/s3/#ionos" >}}
 {{< provider name="Koofr" home="https://koofr.eu/" config="/koofr/" >}}
 {{< provider name="Leviia Object Storage" home="https://www.leviia.com/object-storage" config="/s3/#leviia" >}}
-{{< provider name="Liara Object Storage" home="https://liara.ir/landing/object-storage" config="/s3/#liara-object-storage" >}}
+{{< provider name="Liara Object Storage" home="https://liara.ir/landing/object-storage" config="/s3/#liara-cloud" >}}
 {{< provider name="Linkbox" home="https://linkbox.to/" config="/linkbox/" >}}
 {{< provider name="Linode Object Storage" home="https://www.linode.com/products/object-storage/" config="/s3/#linode" >}}
 {{< provider name="Magalu" home="https://magalu.cloud/object-storage/" config="/s3/#magalu" >}}
